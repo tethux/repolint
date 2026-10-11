@@ -28,6 +28,9 @@ type diagnostic struct {
 	Position   token.Position
 	Message    string
 	Suggestion string
+	End        token.Position
+	SourceLine string
+	FixCommand string
 }
 
 type reporter func(diagnostic)
@@ -44,7 +47,7 @@ type options struct {
 	output          io.Writer
 }
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 type runStats struct {
 	Files   int
@@ -67,6 +70,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.StringVar(&opts.configPath, "config", "", "read configuration from this file")
 	quiet := flags.Bool("quiet", false, "omit the summary")
 	showVersion := flags.Bool("version", false, "print the version")
+	colorMode := flags.String("color", "auto", "color diagnostics: auto, always, never")
 	flags.Usage = func() {
 		_, writeErr := fmt.Fprint(stderr, "Usage: repolint [options] [path ...]\n\nCheck Go source files. Defaults to the current directory.\n\n")
 		if writeErr != nil {
@@ -86,6 +90,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
+	if *colorMode != "auto" && *colorMode != "always" && *colorMode != "never" {
+		return printFailure(stderr, failure("--color must be auto, always, or never", nil))
+	}
+	renderer := diagnosticRenderer{color: useColor(stderr, *colorMode)}
 	if !opts.fix && (opts.diff || opts.allowStructural || opts.fixRules != "") {
 		return printFailure(stderr, failure("--diff, --allow-structural, and --fix-rules require --fix", nil))
 	}
@@ -111,13 +119,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return strings.Compare(a.Rule, b.Rule)
 	})
 	for _, d := range diagnostics {
-		if _, writeErr := fmt.Fprintf(stderr, "%s: %s: %s\n", displayPosition(d.Position), d.Rule, d.Message); writeErr != nil {
+		if _, writeErr := io.WriteString(stderr, renderer.render(d)); writeErr != nil {
 			return 2
-		}
-		if d.Suggestion != "" {
-			if _, writeErr := fmt.Fprintf(stderr, "  help: %s\n", d.Suggestion); writeErr != nil {
-				return 2
-			}
 		}
 	}
 	for _, lintErr := range lintErrors {
@@ -134,7 +137,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 			summary += fmt.Sprintf("; %s %d %s", action, stats.Changed, plural(stats.Changed, "file"))
 		}
-		if _, writeErr := fmt.Fprintln(stderr, summary); writeErr != nil {
+		if _, writeErr := fmt.Fprintln(stderr, renderer.summary(summary, len(diagnostics) > 0)); writeErr != nil {
 			return 2
 		}
 	}
@@ -209,17 +212,22 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 		return failure("resolve source path", relErr)
 	}
 	rel = filepath.ToSlash(rel)
+	emit := func(d diagnostic) {
+		d.SourceLine = diagnosticSourceLine(src, d.Position.Offset)
+		d.FixCommand = previewFixCommand(d, opts)
+		report(d)
+	}
 	if rule := opts.cfg.Rules[ruleExpensiveAssertion]; rule.applies(rel) {
-		lintAssertions(fset, file, false, report, rule)
+		lintAssertions(fset, file, false, emit, rule)
 	}
 	if rule := opts.cfg.Rules[ruleStructuredError]; rule.applies(rel) && !isErrorPackage(rel, rule.ErrorPackage) {
-		lintErrorConstructors(fset, file, report, rule)
+		lintErrorConstructors(fset, file, emit, rule)
 	}
 	if rule := opts.cfg.Rules[ruleErrorComparison]; rule.applies(rel) {
-		lintDirectErrorComparisons(fset, file, report, rule)
+		lintDirectErrorComparisons(fset, file, emit, rule)
 	}
 	if rule := opts.cfg.Rules[ruleNoAny]; rule.applies(rel) {
-		lintAny(fset, file, report)
+		lintAny(fset, file, emit)
 	}
 	return nil
 }

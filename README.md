@@ -3,14 +3,14 @@
 A Go linter for structured errors, assertion guards, and explicit types.
 
 ```sh
-go get -tool github.com/tethux/repolint/cmd/repolint@v0.2.0
+go get -tool github.com/tethux/repolint/cmd/repolint@v0.2.1
 go tool repolint .
 ```
 
 Requires Go 1.26.4 or newer. For a one-off check:
 
 ```sh
-go run github.com/tethux/repolint/cmd/repolint@v0.2.0 .
+go run github.com/tethux/repolint/cmd/repolint@v0.2.1 .
 ```
 
 ## Rules
@@ -54,6 +54,8 @@ To suppress a rule on the next line:
 //repolint:ignore structured-error -- compatibility boundary
 return errors.New("legacy failure")
 ```
+
+Diagnostics show the source span, help, and a command to preview configured fixes. Colors are automatic for terminal output; use `--color=always`, `--color=never`, or `NO_COLOR` to control them.
 
 Use `all` to suppress every rule on that line. `--quiet` omits the summary; `--version` prints the installed version. Exit codes are `0` for clean source, `1` for remaining issues, and `2` for configuration or operational errors.
 

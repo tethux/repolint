@@ -14,18 +14,18 @@ func TestCLIOutputAndExitCodes(t *testing.T) {
 	if status := run([]string{root}, &stdout, &stderr); status != 1 {
 		t.Fatalf("exit = %d", status)
 	}
-	if !strings.Contains(stderr.String(), "source.go:1:22: no-any:") || !strings.Contains(stderr.String(), "repolint: 1 issue in 1 file") || stdout.Len() != 0 {
+	if !strings.Contains(stderr.String(), "source.go:1:22") || !strings.Contains(stderr.String(), "error[no-any]") || !strings.Contains(stderr.String(), "repolint: 1 issue in 1 file") || stdout.Len() != 0 {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
-	if strings.Contains(stderr.String(), "[no-any]") || strings.Contains(stderr.String(), "  fix:") {
-		t.Fatal("old diagnostic format remains")
+	if strings.Contains(stderr.String(), "\x1b[") || !strings.Contains(stderr.String(), "1 | package p; var value any") || !strings.Contains(stderr.String(), "^^^") {
+		t.Fatal("missing source excerpt or unexpected colors in redirected output")
 	}
 	writeFixture(t, root, "source.go", "package p; var value int")
 	stderr.Reset()
 	if status := run([]string{"--quiet", path}, &stdout, &stderr); status != 0 || stderr.Len() != 0 {
 		t.Fatalf("quiet: exit=%d output=%q", status, stderr.String())
 	}
-	if status := run([]string{"--version"}, &stdout, &stderr); status != 0 || stdout.String() != "repolint 0.2.0\n" {
+	if status := run([]string{"--version"}, &stdout, &stderr); status != 0 || stdout.String() != "repolint 0.2.1\n" {
 		t.Fatalf("version: exit=%d output=%q", status, stdout.String())
 	}
 	stderr.Reset()

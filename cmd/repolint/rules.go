@@ -30,12 +30,21 @@ func lintDirectErrorComparisons(
 		if ignored(file, fset, binary.Pos(), ruleErrorComparison) {
 			return true
 		}
+		value, category := binary.X, binary.Y
+		if isStructuredSentinel(binary.X, imports, settings...) {
+			value, category = binary.Y, binary.X
+		}
+		replacement := "errors.Is(" + renderExpr(fset, value) + ", " + renderExpr(fset, category) + ")"
+		if binary.Op == token.NEQ {
+			replacement = "!" + replacement
+		}
 
 		report(diagnostic{
 			Rule:       ruleErrorComparison,
 			Position:   fset.Position(binary.Pos()),
+			End:        fset.Position(binary.End()),
 			Message:    "compare error categories with errors.Is",
-			Suggestion: "use errors.Is(err, category) to match wrapped errors",
+			Suggestion: "replace with " + replacement + " to match wrapped errors",
 		})
 
 		return true
@@ -108,6 +117,7 @@ func lintAny(
 			report(diagnostic{
 				Rule:       ruleNoAny,
 				Position:   fset.Position(value.Pos()),
+				End:        fset.Position(value.End()),
 				Message:    "replace any with a concrete type or interface",
 				Suggestion: "use a concrete type or the smallest behavior-bearing interface",
 			})
@@ -120,6 +130,7 @@ func lintAny(
 			report(diagnostic{
 				Rule:       ruleNoAny,
 				Position:   fset.Position(value.Pos()),
+				End:        fset.Position(value.End()),
 				Message:    "replace interface{} with a concrete type or interface",
 				Suggestion: "use a concrete type or the smallest behavior-bearing interface",
 			})
@@ -183,7 +194,8 @@ func lintErrorConstructors(
 			report(diagnostic{
 				Rule:       ruleStructuredError,
 				Position:   fset.Position(call.Pos()),
-				Message:    "fmt.Errorf is forbidden in this package",
+				End:        fset.Position(call.End()),
+				Message:    "use a structured error instead of fmt.Errorf",
 				Suggestion: suggestion,
 			})
 
@@ -193,7 +205,8 @@ func lintErrorConstructors(
 			report(diagnostic{
 				Rule:       ruleStructuredError,
 				Position:   fset.Position(call.Pos()),
-				Message:    "errors.New is forbidden in this package",
+				End:        fset.Position(call.End()),
+				Message:    "use a structured error instead of errors.New",
 				Suggestion: structuredSuggestion(rule),
 			})
 		}

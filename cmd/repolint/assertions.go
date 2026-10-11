@@ -240,12 +240,13 @@ func lintAssertions(
 		report(diagnostic{
 			Rule:     ruleExpensiveAssertion,
 			Position: fset.Position(call.Pos()),
+			End:      fset.Position(call.End()),
 			Message: fmt.Sprintf(
 				"expensive assertion %q runs without a %s guard",
 				name, assertionSettings(settings...).Guard,
 			),
 			Suggestion: fmt.Sprintf(
-				"run repolint with --fix, or wrap the call in `if %s { %s(...) }`",
+				"wrap the call in if %s { %s(...) }",
 				assertionSettings(settings...).Guard, name,
 			),
 		})
