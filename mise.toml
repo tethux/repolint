@@ -1,0 +1,23 @@
+[tools]
+go = "1.26.5"
+"go:golang.org/x/tools/cmd/goimports" = "0.42.0"
+"go:mvdan.cc/gofumpt" = "0.9.2"
+
+[tasks."fmt:go"]
+description = "Format Go source"
+run = "goimports -w cmd && gofumpt -w cmd && go mod tidy"
+
+[tasks."lint:go"]
+description = "Check Go source"
+run = "go vet ./..."
+
+[tasks."test:go"]
+description = "Test rules, configuration, and fixes"
+run = "go test ./..."
+
+[tasks.build]
+description = "Build repolint"
+run = "go build -o /tmp/repolint ./cmd/repolint"
+
+[tasks.check]
+depends = ["lint:go", "test:go"]

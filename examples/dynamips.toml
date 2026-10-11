@@ -1,0 +1,23 @@
+schema = 1
+
+[rules.expensive-assertion]
+enabled = false
+
+[rules.structured-error]
+enabled = true
+paths = ["."]
+exclude_dirs = ["examples"]
+error_package = "errs"
+dialect = "operation"
+operation_type = "errs.Operation"
+fix = "off"
+
+[rules.direct-error-comparison]
+enabled = true
+paths = ["."]
+error_packages = ["errs"]
+sentinel_prefix = "Err"
+
+[rules.no-any]
+enabled = true
+paths = ["."]

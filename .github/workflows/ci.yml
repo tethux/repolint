@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v3
+      - run: mise run check
+      - name: Check formatting
+        run: |
+          mise exec -- goimports -l cmd > /tmp/repolint-format
+          mise exec -- gofumpt -l cmd >> /tmp/repolint-format
+          cat /tmp/repolint-format
+          test ! -s /tmp/repolint-format
+          mise exec -- go mod tidy -diff
+      - run: mise run build
