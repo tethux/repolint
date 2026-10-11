@@ -9,7 +9,7 @@ run = "goimports -w cmd && gofumpt -w cmd && go mod tidy"
 
 [tasks."lint:go"]
 description = "Check Go source"
-run = "go vet ./..."
+run = "go run ./cmd/repolint . && go vet ./..."
 
 [tasks."test:go"]
 description = "Test rules, configuration, and fixes"

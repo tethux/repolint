@@ -30,28 +30,29 @@ type FileConfig struct {
 type RuleConfig struct {
 	source           *ast.File
 	positions        *token.FileSet
-	Enabled          bool     `toml:"enabled"`
-	Paths            []string `toml:"paths"`
-	ExcludeDirs      []string `toml:"exclude_dirs"`
-	IncludeTests     bool     `toml:"include_tests"`
-	Fix              string   `toml:"fix"`
-	Calls            []string `toml:"calls"`
-	Guard            string   `toml:"guard"`
-	ErrorPackage     string   `toml:"error_package"`
-	ErrorPackages    []string `toml:"error_packages"`
-	SentinelPrefix   string   `toml:"sentinel_prefix"`
-	Dialect          string   `toml:"dialect"`
-	NewConstructor   string   `toml:"new_constructor"`
-	WrapConstructor  string   `toml:"wrap_constructor"`
-	OperationType    string   `toml:"operation_type"`
-	GenerateDomains  bool     `toml:"generate_domains"`
-	ConstructorRoles []string `toml:"constructor_roles"`
+	Enabled          bool              `toml:"enabled"`
+	Paths            []string          `toml:"paths"`
+	ExcludeDirs      []string          `toml:"exclude_dirs"`
+	IncludeTests     bool              `toml:"include_tests"`
+	Fix              string            `toml:"fix"`
+	Calls            []string          `toml:"calls"`
+	Guard            string            `toml:"guard"`
+	ErrorPackage     string            `toml:"error_package"`
+	ErrorPackages    []string          `toml:"error_packages"`
+	SentinelPrefix   string            `toml:"sentinel_prefix"`
+	Dialect          string            `toml:"dialect"`
+	NewConstructor   string            `toml:"new_constructor"`
+	WrapConstructor  string            `toml:"wrap_constructor"`
+	OperationType    string            `toml:"operation_type"`
+	GenerateDomains  bool              `toml:"generate_domains"`
+	Categories       map[string]string `toml:"categories"`
+	ConstructorRoles []string          `toml:"constructor_roles"`
 }
 
 func defaultConfig() Config {
 	return Config{Schema: 1, Files: FileConfig{ExcludeDirs: []string{".git", ".jj", "vendor", "node_modules", "build"}, ExcludeGenerated: true}, Rules: map[string]RuleConfig{
 		ruleNoAny:              {Enabled: true, Paths: []string{"."}, Fix: "off"},
-		ruleStructuredError:    {Paths: []string{"."}, Fix: "off", ErrorPackage: "errs", Dialect: "constructors", NewConstructor: "New", WrapConstructor: "Wrap", ConstructorRoles: []string{"operation", "kind", "target"}},
+		ruleStructuredError:    {Paths: []string{"."}, Fix: "off", ErrorPackage: "errs", SentinelPrefix: "Err", Dialect: "constructors", NewConstructor: "New", WrapConstructor: "Wrap", ConstructorRoles: []string{"operation", "kind", "target"}},
 		ruleErrorComparison:    {Enabled: true, Paths: []string{"."}, Fix: "off", ErrorPackages: []string{"errs"}, SentinelPrefix: "Err"},
 		ruleExpensiveAssertion: {Paths: []string{"."}, Fix: "safe", Calls: []string{"assertValid*", "assertInvariants*"}, Guard: "assert.Enabled"},
 	}}
@@ -175,8 +176,16 @@ func (cfg Config) validate() error {
 			if rule.GenerateDomains && rule.Dialect != "constructors" {
 				return failure("domain generation requires constructor dialect", nil)
 			}
-			if rule.ErrorPackage == "" || strings.ContainsAny(rule.ErrorPackage, "/\\.") {
+			if !validIdentifier(rule.ErrorPackage) {
 				return failure("error_package must be a package name", nil)
+			}
+			if !validIdentifier(rule.SentinelPrefix) {
+				return failure("sentinel_prefix must be an identifier", nil)
+			}
+			for message, category := range rule.Categories {
+				if message == "" || !validIdentifier(category) {
+					return failure("categories must map nonempty messages to category identifiers", nil)
+				}
 			}
 			if !validIdentifier(rule.NewConstructor) || !validIdentifier(rule.WrapConstructor) {
 				return failure("invalid error constructor name", nil)
@@ -204,7 +213,7 @@ func (cfg Config) validate() error {
 
 func validIdentifier(name string) bool {
 	expr, parseErr := parser.ParseExpr(name)
-	return parseErr == nil && selectorNameOrIdent(expr) == name && !strings.Contains(name, ".") && name != ""
+	return name != "_" && parseErr == nil && selectorNameOrIdent(expr) == name && !strings.Contains(name, ".") && name != ""
 }
 
 func validPrefix(value string) bool {

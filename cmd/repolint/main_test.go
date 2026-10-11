@@ -799,14 +799,14 @@ func open(ref string, err error) error {
 	got := readFixture(t, path)
 	for _, want := range []string{
 		`"example.test/repolint/storage/errs"`,
-		`errs.Wrap("storage", errs.ErrOpen, ref, err)`,
+		`errs.Wrap("storage", errs.ErrOpen, fmt.Sprintf("%q", ref), err)`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("fixed source does not contain %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, `"fmt"`) {
-		t.Fatalf("unused fmt import remains:\n%s", got)
+	if !strings.Contains(got, `"fmt"`) {
+		t.Fatalf("formatting import was removed:\n%s", got)
 	}
 }
 
@@ -873,7 +873,7 @@ func inspect(id string, err error) error {
 	}
 
 	got := readFixture(t, path)
-	if !strings.Contains(got, `errs.Wrap(errs.ErrInspect, id, err)`) {
+	if !strings.Contains(got, `errs.Wrap(errs.ErrInspect, fmt.Sprintf("%q", id), err)`) {
 		t.Fatalf("fixed source uses wrong dialect:\n%s", got)
 	}
 }
@@ -905,7 +905,7 @@ func connect(left string, right int, cause error) error {
 	got := readFixture(t, path)
 	for _, want := range []string{
 		`errs2 "example.test/repolint/bridge/errs"`,
-		`errs2.Wrap("connect to", errs2.ErrConnect, fmt.Sprint(left, " ", right), cause)`,
+		`errs2.Wrap("connect to", errs2.ErrConnect, fmt.Sprintf("%q %d", left, right), cause)`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("fixed source does not contain %q:\n%s", want, got)
@@ -946,7 +946,7 @@ func start(id string, err error) error {
 	}
 
 	got := readFixture(t, path)
-	if !strings.Contains(got, `errs.Wrap(errs.ErrStart, id, err)`) {
+	if !strings.Contains(got, `errs.Wrap(errs.ErrStart, fmt.Sprintf("%q", id), err)`) {
 		t.Fatalf("fixed source uses wrong generated domain:\n%s", got)
 	}
 	errorsSource := readFixture(t, filepath.Join(root, filepath.FromSlash("virt/hypervisor/qemu/errs/errors.go")))

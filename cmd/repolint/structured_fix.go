@@ -28,13 +28,14 @@ type ErrorDialect struct {
 }
 
 type ErrorDomain struct {
-	Directory   string
-	ImportPath  string
-	PackageName string
-	Dialect     ErrorDialect
-	NewName     string
-	WrapName    string
-	Sentinels   []Sentinel
+	Directory      string
+	ImportPath     string
+	PackageName    string
+	Dialect        ErrorDialect
+	NewName        string
+	WrapName       string
+	SentinelPrefix string
+	Sentinels      []Sentinel
 
 	aliases        map[string]int
 	functionKinds  map[string]map[string]int
@@ -51,11 +52,13 @@ type parsedGoFile struct {
 
 type genericError struct {
 	message   string
+	template  string
 	cause     ast.Expr
 	targets   []formatArgument
 	operation string
 	function  string
 	domain    *ErrorDomain
+	fmtAlias  string
 }
 
 func fixStructuredErrors(root string, opts options) error {
@@ -201,11 +204,15 @@ func discoverErrorDomains(root, modulePath string, files []*parsedGoFile, rule R
 			functionKinds: map[string]map[string]int{}, operationKinds: map[string]map[string]int{},
 			causeKinds: map[string]map[string]int{}, providers: map[string]map[string]int{},
 		}
+		domain.SentinelPrefix = rule.SentinelPrefix
 		domain.NewName = rule.NewConstructor
 		domain.WrapName = rule.WrapConstructor
 		domain.Dialect.New = constructorRoles(unit.file, rule.NewConstructor)
 		domain.Dialect.Wrap = constructorRoles(unit.file, rule.WrapConstructor)
-		domain.Sentinels = parseSentinels(unit.file)
+		domain.Sentinels = parseSentinels(unit.file, rule.SentinelPrefix)
+		if rule.Dialect == "operation" && !supportsOperation(files, domain.Directory, strings.Split(rule.OperationType, ".")[1]) {
+			continue
+		}
 		domains = append(domains, domain)
 	}
 	slices.SortFunc(domains, func(a, b *ErrorDomain) int { return cmp.Compare(a.Directory, b.Directory) })
@@ -221,7 +228,27 @@ func constructorRoles(file *ast.File, name string) []string {
 		var roles []string
 		for _, field := range fn.Type.Params.List {
 			for _, param := range field.Names {
-				roles = append(roles, strings.ToLower(param.Name))
+				role := strings.ToLower(param.Name)
+				switch role {
+				case "op":
+					role = "operation"
+				case "category":
+					role = "kind"
+				case "err":
+					role = "cause"
+				}
+				typ, ok := field.Type.(*ast.Ident)
+				if !ok {
+					return nil
+				}
+				expected := "string"
+				if role == "kind" || role == "cause" {
+					expected = "error"
+				}
+				if typ.Name != expected {
+					return nil
+				}
+				roles = append(roles, role)
 			}
 		}
 		return roles
@@ -229,7 +256,8 @@ func constructorRoles(file *ast.File, name string) []string {
 	return nil
 }
 
-func parseSentinels(file *ast.File) []Sentinel {
+func parseSentinels(file *ast.File, prefix string) []Sentinel {
+	imports := importAliases(file)
 	var result []Sentinel
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
@@ -242,7 +270,7 @@ func parseSentinels(file *ast.File) []Sentinel {
 				continue
 			}
 			for i, name := range value.Names {
-				if !strings.HasPrefix(name.Name, "Err") || i >= len(value.Values) {
+				if !strings.HasPrefix(name.Name, prefix) || i >= len(value.Values) {
 					continue
 				}
 				call, ok := value.Values[i].(*ast.CallExpr)
@@ -252,6 +280,10 @@ func parseSentinels(file *ast.File) []Sentinel {
 				selector, ok := call.Fun.(*ast.SelectorExpr)
 				lit, literal := call.Args[0].(*ast.BasicLit)
 				if !ok || selector.Sel.Name != "New" || !literal {
+					continue
+				}
+				pkg, pkgOK := selector.X.(*ast.Ident)
+				if !pkgOK || imports[pkg.Name] != "errors" {
 					continue
 				}
 				message, err := strconv.Unquote(lit.Value)
@@ -326,6 +358,7 @@ func applyStructuredFixes(unit *parsedGoFile, domain *ErrorDomain, additions map
 		return false
 	}
 	changed := false
+	sentinels := sentinelDeclarations(unit.file)
 
 	ast.Inspect(unit.file, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
@@ -337,10 +370,11 @@ func applyStructuredFixes(unit *parsedGoFile, domain *ErrorDomain, additions map
 			call,
 			functionAt(unit.file, call.Pos()),
 		)
-		if !ok || ignored(unit.file, unit.fset, call.Pos(), ruleStructuredError) {
+		if !ok || sentinels[call] || ignored(unit.file, unit.fset, call.Pos(), ruleStructuredError) {
 			return true
 		}
 		generic.domain = domain
+		generic.fmtAlias = existingDomainAlias(imports, "fmt")
 		roles := domain.Dialect.New
 		constructor := rule.NewConstructor
 		if generic.cause != nil {
@@ -359,18 +393,38 @@ func applyStructuredFixes(unit *parsedGoFile, domain *ErrorDomain, additions map
 		if !validRoles(roles, generic.cause != nil) {
 			return true
 		}
-		sentinel := matchSentinel(domain, &generic)
-		if !structural || rule.Dialect == "operation" {
-			sentinel = Sentinel{}
-			if len(generic.targets) != 0 {
-				return true
-			}
+		sentinel := Sentinel{}
+		mapped, explicit := rule.Categories[generic.template]
+		if explicit {
 			for _, known := range domain.Sentinels {
-				if normalizeMessage(known.Message) == normalizeMessage(generic.message) {
+				if known.Name == mapped {
 					sentinel = known
 					break
 				}
 			}
+			if sentinel.Name == "" {
+				return true
+			}
+		} else if structural && rule.Dialect == "constructors" {
+			sentinel = matchSentinel(domain, &generic)
+		} else {
+			for _, known := range domain.Sentinels {
+				if known.Message == generic.message {
+					if sentinel.Name != "" {
+						return true
+					}
+					sentinel = known
+				}
+			}
+		}
+		if len(generic.targets) > 0 && !structural && !explicit {
+			return true
+		}
+		if rule.Dialect == "operation" && len(generic.targets) > 0 && !explicit {
+			return true
+		}
+		if rule.Dialect == "constructors" && len(generic.targets) > 0 && (!slices.Contains(roles, "target") || (generic.cause != nil && slices.Index(roles, "cause") < slices.Index(roles, "target"))) {
+			return true
 		}
 		if sentinel.Name == "" {
 			if !structural || rule.Dialect == "operation" {
@@ -387,7 +441,7 @@ func applyStructuredFixes(unit *parsedGoFile, domain *ErrorDomain, additions map
 		}
 		if rule.Dialect == "operation" {
 			typeName := strings.Split(rule.OperationType, ".")[1]
-			fields := []ast.Expr{&ast.KeyValueExpr{Key: ast.NewIdent("Op"), Value: stringExpr(generic.operation)}, &ast.KeyValueExpr{Key: ast.NewIdent("Kind"), Value: &ast.SelectorExpr{X: ast.NewIdent(alias), Sel: ast.NewIdent(sentinel.Name)}}}
+			fields := []ast.Expr{&ast.KeyValueExpr{Key: ast.NewIdent("Op"), Value: operationExpression(&generic)}, &ast.KeyValueExpr{Key: ast.NewIdent("Kind"), Value: &ast.SelectorExpr{X: ast.NewIdent(alias), Sel: ast.NewIdent(sentinel.Name)}}}
 			if generic.cause != nil {
 				fields = append(fields, &ast.KeyValueExpr{Key: ast.NewIdent("Cause"), Value: generic.cause})
 			}
@@ -421,7 +475,7 @@ func analyzeGenericError(imports map[string]string, call *ast.CallExpr, function
 		if !literal || normalizeMessage(message) == "" {
 			return genericError{}, false
 		}
-		return genericError{message: message, operation: operationText(message), function: function}, literal
+		return genericError{message: message, template: message, operation: operationText(message), function: function}, literal
 	}
 	if importPath != "fmt" || selector.Sel.Name != "Errorf" || len(call.Args) == 0 {
 		return genericError{}, false
@@ -434,7 +488,7 @@ func analyzeGenericError(imports map[string]string, call *ast.CallExpr, function
 	if normalizeMessage(analysis.static) == "" {
 		return genericError{}, false
 	}
-	return genericError{message: analysis.static, cause: analysis.cause, targets: analysis.targets, operation: operationText(analysis.static), function: function}, true
+	return genericError{message: analysis.static, template: formatString, cause: analysis.cause, targets: analysis.targets, operation: operationText(analysis.static), function: function}, true
 }
 
 func functionAt(file *ast.File, pos token.Pos) string {
@@ -454,8 +508,9 @@ type formatParts struct {
 }
 
 type formatArgument struct {
-	expr ast.Expr
-	verb byte
+	expr   ast.Expr
+	verb   byte
+	format string
 }
 
 func analyzeFormat(value string, args []ast.Expr) formatParts {
@@ -485,7 +540,7 @@ func analyzeFormat(value string, args []ast.Expr) formatParts {
 			if verb == 'w' {
 				parts.cause = args[argIndex]
 			} else {
-				parts.targets = append(parts.targets, formatArgument{expr: args[argIndex], verb: verb})
+				parts.targets = append(parts.targets, formatArgument{expr: args[argIndex], verb: verb, format: value[i : j+1]})
 			}
 		}
 		argIndex++
@@ -504,6 +559,10 @@ func structuredArguments(unit *parsedGoFile, generic *genericError, sentinel Sen
 			provider := mostCommon(generic.domain.providers[generic.function])
 			if provider != "" {
 				if expr, err := parser.ParseExpr(provider); err == nil {
+					if _, literal := expr.(*ast.BasicLit); !literal {
+						args = append(args, stringExpr(domainOwner(generic.domain)))
+						continue
+					}
 					args = append(args, expr)
 					continue
 				}
@@ -532,25 +591,33 @@ func targetExpression(generic *genericError) ast.Expr {
 	if len(generic.targets) == 0 {
 		return stringExpr("")
 	}
-	if len(generic.targets) > 1 {
-		args := make([]ast.Expr, 0, len(generic.targets)*2-1)
-		for index, target := range generic.targets {
-			if index > 0 {
-				args = append(args, stringExpr(" "))
-			}
-			args = append(args, target.expr)
-		}
-		return &ast.CallExpr{
-			Fun:  &ast.SelectorExpr{X: ast.NewIdent("fmt"), Sel: ast.NewIdent("Sprint")},
-			Args: args,
-		}
+	formats := make([]string, 0, len(generic.targets))
+	args := make([]ast.Expr, 0, len(generic.targets)+1)
+	for _, target := range generic.targets {
+		formats = append(formats, target.format)
 	}
-	switch generic.targets[0].verb {
-	case 'd', 'x', 'X', 'f', 'e', 'E', 'g', 'G', 'o', 'O', 'c', 'p', 'U':
-		return &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent("fmt"), Sel: ast.NewIdent("Sprint")}, Args: []ast.Expr{generic.targets[0].expr}}
-	default:
-		return generic.targets[0].expr
+	args = append(args, stringExpr(strings.Join(formats, " ")))
+	for _, target := range generic.targets {
+		args = append(args, target.expr)
 	}
+	return &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent(generic.fmtAlias), Sel: ast.NewIdent("Sprintf")}, Args: args}
+}
+
+func operationExpression(generic *genericError) ast.Expr {
+	if len(generic.targets) == 0 {
+		return stringExpr(generic.operation)
+	}
+	// Keep source argument order. A trailing wrapped cause is stored separately.
+	format := generic.template
+	if generic.cause != nil {
+		format = strings.TrimSpace(strings.TrimSuffix(format, "%w"))
+		format = strings.TrimRight(format, ": ,-")
+	}
+	args := []ast.Expr{stringExpr(format)}
+	for _, target := range generic.targets {
+		args = append(args, target.expr)
+	}
+	return &ast.CallExpr{Fun: &ast.SelectorExpr{X: ast.NewIdent(generic.fmtAlias), Sel: ast.NewIdent("Sprintf")}, Args: args}
 }
 
 func matchSentinel(domain *ErrorDomain, generic *genericError) Sentinel {
@@ -620,7 +687,7 @@ func matchSentinel(domain *ErrorDomain, generic *genericError) Sentinel {
 }
 
 func newSentinel(domain *ErrorDomain, message string) Sentinel {
-	base := sentinelIdentifier(message)
+	base := domain.SentinelPrefix + strings.TrimPrefix(sentinelIdentifier(message), "Err")
 	name := base
 	used := map[string]bool{}
 	for _, sentinel := range domain.Sentinels {
@@ -841,7 +908,7 @@ func domainForFile(root, modulePath, path string, domains []*ErrorDomain, rule R
 	if relErr != nil {
 		return nil
 	}
-	domain := &ErrorDomain{Directory: dir, ImportPath: modulePath + "/" + filepath.ToSlash(relImport), PackageName: rule.ErrorPackage, NewName: rule.NewConstructor, WrapName: rule.WrapConstructor, Dialect: ErrorDialect{New: roles, Wrap: append(slices.Clone(roles), "cause")}, aliases: map[string]int{}, functionKinds: map[string]map[string]int{}, operationKinds: map[string]map[string]int{}, causeKinds: map[string]map[string]int{}, providers: map[string]map[string]int{}}
+	domain := &ErrorDomain{Directory: dir, ImportPath: modulePath + "/" + filepath.ToSlash(relImport), PackageName: rule.ErrorPackage, SentinelPrefix: rule.SentinelPrefix, NewName: rule.NewConstructor, WrapName: rule.WrapConstructor, Dialect: ErrorDialect{New: roles, Wrap: append(slices.Clone(roles), "cause")}, aliases: map[string]int{}, functionKinds: map[string]map[string]int{}, operationKinds: map[string]map[string]int{}, causeKinds: map[string]map[string]int{}, providers: map[string]map[string]int{}}
 	return domain
 }
 
@@ -1106,7 +1173,7 @@ func mostCommonKindKey(values map[string]map[string]int, kind string) string {
 	return mostCommon(counts)
 }
 
-func domainOwner(domain *ErrorDomain) string { return filepath.Base(filepath.Dir(domain.Directory)) }
+func domainOwner(domain *ErrorDomain) string { return filepath.Base(filepath.Dir(domain.ImportPath)) }
 
 func renderExpr(fset *token.FileSet, expr ast.Expr) string {
 	var output bytes.Buffer
@@ -1136,7 +1203,12 @@ func validRoles(roles []string, wrap bool) bool {
 	if !slices.Contains(roles, "kind") || (wrap && !slices.Contains(roles, "cause")) {
 		return false
 	}
+	seen := map[string]bool{}
 	for _, role := range roles {
+		if seen[role] {
+			return false
+		}
+		seen[role] = true
 		if !slices.Contains([]string{"operation", "provider", "kind", "target", "cause"}, role) {
 			return false
 		}
@@ -1201,13 +1273,71 @@ func supportedFormat(value string, args []ast.Expr) bool {
 		if value[index] == '%' {
 			continue
 		}
-		if !strings.ContainsRune("vsqdxXw", rune(value[index])) {
+		start := index
+		for index < len(value) && strings.ContainsRune("+#- 0.123456789", rune(value[index])) {
+			index++
+		}
+		if index >= len(value) || !strings.ContainsRune("vsqdxXfegbw", rune(value[index])) {
 			return false
 		}
 		if value[index] == 'w' {
 			wraps++
+			if start != index || index != len(value)-1 || count != len(args)-1 {
+				return false
+			}
 		}
 		count++
 	}
 	return count == len(args) && wraps <= 1
+}
+
+func supportsOperation(files []*parsedGoFile, dir, name string) bool {
+	fields := map[string]string{}
+	hasError := false
+	for _, unit := range files {
+		if filepath.Dir(unit.path) != dir {
+			continue
+		}
+		for _, decl := range unit.file.Decls {
+			switch value := decl.(type) {
+			case *ast.GenDecl:
+				if value.Tok != token.TYPE {
+					continue
+				}
+				for _, spec := range value.Specs {
+					typ, ok := spec.(*ast.TypeSpec)
+					if !ok || typ.Name.Name != name {
+						continue
+					}
+					structure, ok := typ.Type.(*ast.StructType)
+					if !ok {
+						continue
+					}
+					for _, field := range structure.Fields.List {
+						ident, ok := field.Type.(*ast.Ident)
+						if !ok {
+							continue
+						}
+						for _, fieldName := range field.Names {
+							fields[fieldName.Name] = ident.Name
+						}
+					}
+				}
+			case *ast.FuncDecl:
+				if value.Name.Name != "Error" || value.Recv == nil || len(value.Recv.List) != 1 || value.Type.Results == nil || len(value.Type.Results.List) != 1 {
+					continue
+				}
+				receiver := value.Recv.List[0].Type
+				if pointer, ok := receiver.(*ast.StarExpr); ok {
+					receiver = pointer.X
+				}
+				ident, ok := receiver.(*ast.Ident)
+				result, resultOK := value.Type.Results.List[0].Type.(*ast.Ident)
+				if ok && resultOK && ident.Name == name && result.Name == "string" {
+					hasError = true
+				}
+			}
+		}
+	}
+	return hasError && fields["Op"] == "string" && fields["Kind"] == "error" && fields["Cause"] == "error"
 }

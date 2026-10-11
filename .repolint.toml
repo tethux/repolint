@@ -1,0 +1,8 @@
+schema = 1
+
+[rules.structured-error]
+enabled = true
+paths = ["cmd/repolint"]
+exclude_dirs = ["cmd/repolint/errors.go"]
+error_package = "errs"
+fix = "off"

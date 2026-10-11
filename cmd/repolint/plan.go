@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"go/ast"
 	"go/format"
 	"go/parser"
@@ -143,6 +142,11 @@ func planInStage(root, stage string, opts options, report reporter) error {
 		return failure("resolve fix scope", relErr)
 	}
 	stageRoot := filepath.Join(stage, relativeRoot)
+	if _, scopeErr := os.Stat(stageRoot); errors.Is(scopeErr, os.ErrNotExist) {
+		return nil
+	} else if scopeErr != nil {
+		return failure("stat fix scope", scopeErr)
+	}
 	stagedOpts := opts
 	stagedOpts.base = stage
 	if opts.permits(ruleStructuredError, false) {
@@ -222,7 +226,7 @@ func planInStage(root, stage string, opts options, report reporter) error {
 	slices.SortFunc(edits, func(a, b fileEdit) int { return strings.Compare(a.Path, b.Path) })
 	if opts.diff {
 		for _, edit := range edits {
-			if diffErr := printDiff(edit); diffErr != nil {
+			if diffErr := printDiffTo(opts.output, edit); diffErr != nil {
 				return diffErr
 			}
 		}
@@ -230,6 +234,9 @@ func planInStage(root, stage string, opts options, report reporter) error {
 		if applyErr := applyPlan(opts.base, edits); applyErr != nil {
 			return applyErr
 		}
+	}
+	if opts.stats != nil {
+		opts.stats.Changed += len(edits)
 	}
 	// Report diagnostics against the planned result, using original source paths.
 	return walkSource(stageRoot, stagedOpts, func(path string, src []byte) error {
@@ -259,34 +266,6 @@ func guardResolvable(file *ast.File, guard string) bool {
 	return file.Scope != nil && file.Scope.Lookup(guard) != nil
 }
 
-func printDiff(edit fileEdit) error {
-	// Full-file unified hunks avoid a second diff implementation or subprocess.
-	old := strings.Split(strings.TrimSuffix(string(edit.Before), "\n"), "\n")
-	if len(edit.Before) == 0 {
-		old = nil
-	}
-	next := strings.Split(strings.TrimSuffix(string(edit.After), "\n"), "\n")
-	oldName := "a/" + filepath.ToSlash(edit.Path)
-	if !edit.Exists {
-		oldName = "/dev/null"
-	}
-	var out strings.Builder
-	fmt.Fprintf(&out, "--- %s\n+++ b/%s\n@@ -%d,%d +1,%d @@\n", oldName, filepath.ToSlash(edit.Path), min(1, len(old)), len(old), len(next))
-	for _, line := range old {
-		fmt.Fprintln(&out, "-"+line)
-	}
-	if len(old) > 0 && !bytes.HasSuffix(edit.Before, []byte("\n")) {
-		fmt.Fprintln(&out, "\\ No newline at end of file")
-	}
-	for _, line := range next {
-		fmt.Fprintln(&out, "+"+line)
-	}
-	if _, writeErr := fmt.Fprint(os.Stdout, out.String()); writeErr != nil {
-		return failure("write diff", writeErr)
-	}
-	return nil
-}
-
 func applyPlan(base string, edits []fileEdit) error {
 	repository, openErr := os.OpenRoot(base)
 	if openErr != nil {
@@ -304,6 +283,10 @@ func applyPlan(base string, edits []fileEdit) error {
 }
 
 func applyEdits(repository *os.Root, edits []fileEdit) error {
+	missingDirs, dirErr := missingDirectories(repository, edits)
+	if dirErr != nil {
+		return dirErr
+	}
 	for _, edit := range edits {
 		current, readErr := repository.ReadFile(edit.Path)
 		if edit.Exists {
@@ -326,6 +309,12 @@ func applyEdits(repository *os.Root, edits []fileEdit) error {
 					restoreErr = repository.Remove(previous.Path)
 				}
 				rollbackErr = errors.Join(rollbackErr, restoreErr)
+			}
+			for _, dir := range missingDirs {
+				if _, statErr := repository.Stat(dir); errors.Is(statErr, os.ErrNotExist) {
+					continue
+				}
+				rollbackErr = errors.Join(rollbackErr, repository.Remove(dir))
 			}
 			return failure("apply fix "+edit.Path, errors.Join(writeErr, rollbackErr))
 		}
@@ -352,4 +341,34 @@ func writeEdit(repository *os.Root, path string, data []byte, mode fs.FileMode) 
 		return failure("replace source", errors.Join(renameErr, removeErr))
 	}
 	return nil
+}
+
+func missingDirectories(repository *os.Root, edits []fileEdit) ([]string, error) {
+	missing := map[string]bool{}
+	for _, edit := range edits {
+		for dir := filepath.Dir(edit.Path); dir != "."; dir = filepath.Dir(dir) {
+			info, statErr := repository.Stat(dir)
+			if statErr == nil {
+				if !info.IsDir() {
+					return nil, failure("fix parent is not a directory: "+dir, nil)
+				}
+				break
+			}
+			if !errors.Is(statErr, os.ErrNotExist) {
+				return nil, failure("stat fix directory", statErr)
+			}
+			missing[dir] = true
+		}
+	}
+	dirs := make([]string, 0, len(missing))
+	for dir := range missing {
+		dirs = append(dirs, dir)
+	}
+	slices.SortFunc(dirs, func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		return strings.Compare(a, b)
+	})
+	return dirs, nil
 }

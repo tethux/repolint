@@ -34,8 +34,8 @@ func lintDirectErrorComparisons(
 		report(diagnostic{
 			Rule:       ruleErrorComparison,
 			Position:   fset.Position(binary.Pos()),
-			Message:    "structured error categories must not be compared directly",
-			Suggestion: "use errors.Is so wrapped OpError categories are matched",
+			Message:    "compare error categories with errors.Is",
+			Suggestion: "use errors.Is(err, category) to match wrapped errors",
 		})
 
 		return true
@@ -108,7 +108,7 @@ func lintAny(
 			report(diagnostic{
 				Rule:       ruleNoAny,
 				Position:   fset.Position(value.Pos()),
-				Message:    "any is forbidden in important production modules",
+				Message:    "replace any with a concrete type or interface",
 				Suggestion: "use a concrete type or the smallest behavior-bearing interface",
 			})
 
@@ -120,7 +120,7 @@ func lintAny(
 			report(diagnostic{
 				Rule:       ruleNoAny,
 				Position:   fset.Position(value.Pos()),
-				Message:    "interface{} is forbidden in important production modules",
+				Message:    "replace interface{} with a concrete type or interface",
 				Suggestion: "use a concrete type or the smallest behavior-bearing interface",
 			})
 		}
@@ -136,6 +136,7 @@ func lintErrorConstructors(
 	settings ...RuleConfig,
 ) {
 	imports := importAliases(file)
+	sentinels := sentinelDeclarations(file)
 	rule := defaultConfig().Rules[ruleStructuredError]
 	if len(settings) > 0 {
 		rule = settings[0]
@@ -162,7 +163,7 @@ func lintErrorConstructors(
 			return true
 		}
 
-		if ignored(file, fset, call.Pos(), ruleStructuredError) {
+		if sentinels[call] || ignored(file, fset, call.Pos(), ruleStructuredError) {
 			return true
 		}
 
@@ -279,4 +280,37 @@ func importAliases(file *ast.File) map[string]string {
 	}
 
 	return imports
+}
+
+// Stable package-level categories may use errors.New outside the error package.
+func sentinelDeclarations(file *ast.File) map[*ast.CallExpr]bool {
+	result := map[*ast.CallExpr]bool{}
+	imports := importAliases(file)
+	for _, decl := range file.Decls {
+		group, ok := decl.(*ast.GenDecl)
+		if !ok || group.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range group.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for _, expr := range value.Values {
+				call, ok := expr.(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "New" {
+					continue
+				}
+				pkg, ok := selector.X.(*ast.Ident)
+				if ok && imports[pkg.Name] == "errors" {
+					result[call] = true
+				}
+			}
+		}
+	}
+	return result
 }

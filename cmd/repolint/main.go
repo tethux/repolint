@@ -2,13 +2,17 @@
 package main
 
 import (
+	"cmp"
+	"errors"
 	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -36,92 +40,136 @@ type options struct {
 	configPath      string
 	cfg             Config
 	base            string
+	stats           *runStats
+	output          io.Writer
 }
 
-func main() {
+const version = "0.2.0"
+
+type runStats struct {
+	Files   int
+	Changed int
+}
+
+func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+
+func run(args []string, stdout, stderr io.Writer) int {
 	var opts options
-
-	flag.BoolVar(
-		&opts.fix,
-		"fix",
-		false,
-		"apply safe automatic fixes",
-	)
-
-	flag.BoolVar(&opts.diff, "diff", false, "preview permitted fixes without writing")
-	flag.BoolVar(&opts.allowStructural, "allow-structural", false, "allow configured structural error fixes")
-	flag.StringVar(&opts.fixRules, "fix-rules", "", "comma-separated rules to fix")
-	flag.StringVar(&opts.configPath, "config", "", "configuration file (defaults to .repolint.toml)")
-	flag.Usage = func() {
-		// #nosec G705 -- this writes plain text to the CLI's terminal output.
-		_, writeErr := fmt.Fprintf(
-			flag.CommandLine.Output(),
-			"Usage: %s [options] [path ...]\n\n"+
-				"Enforces configurable Go source policies.\n\n"+
-				"If no paths are supplied, the current directory is checked.\n\n"+
-				"Suppression:\n"+
-				"  //repolint:ignore RULE -- reason\n\n",
-			filepath.Base(os.Args[0]),
-		)
-		if writeErr != nil {
-			os.Exit(1)
-		}
-
-		flag.PrintDefaults()
-	}
-
-	flag.Parse()
-	if !opts.fix && (opts.diff || opts.allowStructural || opts.fixRules != "") {
-		_, writeErr := fmt.Fprintln(os.Stderr, "repolint: fix options require --fix")
-		if writeErr != nil {
-			os.Exit(1)
-		}
-		os.Exit(2)
-	}
-
-	roots := flag.Args()
-	if len(roots) == 0 {
-		roots = []string{"."}
-	}
-
-	failed := false
-
-	report := func(d diagnostic) {
-		failed = true
-
-		_, writeErr := fmt.Fprintf(
-			os.Stderr,
-			"%s: [%s] %s\n",
-			d.Position,
-			d.Rule,
-			d.Message,
-		)
+	stats := runStats{}
+	opts.stats = &stats
+	opts.output = stdout
+	flags := flag.NewFlagSet("repolint", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.BoolVar(&opts.fix, "fix", false, "apply configured fixes")
+	flags.BoolVar(&opts.diff, "diff", false, "show a patch without writing files (requires --fix)")
+	flags.BoolVar(&opts.allowStructural, "allow-structural", false, "allow configured error-domain edits (requires --fix)")
+	flags.StringVar(&opts.fixRules, "fix-rules", "", "only fix these comma-separated rules")
+	flags.StringVar(&opts.configPath, "config", "", "read configuration from this file")
+	quiet := flags.Bool("quiet", false, "omit the summary")
+	showVersion := flags.Bool("version", false, "print the version")
+	flags.Usage = func() {
+		_, writeErr := fmt.Fprint(stderr, "Usage: repolint [options] [path ...]\n\nCheck Go source files. Defaults to the current directory.\n\n")
 		if writeErr != nil {
 			return
 		}
-
-		if d.Suggestion != "" {
-			_, writeErr = fmt.Fprintf(os.Stderr, "  fix: %s\n", d.Suggestion)
-			if writeErr != nil {
-				return
-			}
-		}
+		flags.PrintDefaults()
 	}
-
+	if parseErr := flags.Parse(args); parseErr != nil {
+		if errors.Is(parseErr, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if *showVersion {
+		if _, writeErr := fmt.Fprintf(stdout, "repolint %s\n", version); writeErr != nil {
+			return 2
+		}
+		return 0
+	}
+	if !opts.fix && (opts.diff || opts.allowStructural || opts.fixRules != "") {
+		return printFailure(stderr, failure("--diff, --allow-structural, and --fix-rules require --fix", nil))
+	}
+	roots := flags.Args()
+	if len(roots) == 0 {
+		roots = []string{"."}
+	}
+	var diagnostics []diagnostic
+	var lintErrors []error
 	for _, root := range roots {
-		lintErr := lintRoot(root, opts, report)
+		lintErr := lintRoot(root, opts, func(d diagnostic) { diagnostics = append(diagnostics, d) })
 		if lintErr != nil {
-			_, writeErr := fmt.Fprintf(os.Stderr, "repolint: %v\n", lintErr)
-			if writeErr != nil {
-				failed = true
-			}
-			failed = true
+			lintErrors = append(lintErrors, lintErr)
 		}
 	}
-
-	if failed {
-		os.Exit(1)
+	slices.SortFunc(diagnostics, func(a, b diagnostic) int {
+		if order := strings.Compare(a.Position.Filename, b.Position.Filename); order != 0 {
+			return order
+		}
+		if order := cmp.Compare(a.Position.Offset, b.Position.Offset); order != 0 {
+			return order
+		}
+		return strings.Compare(a.Rule, b.Rule)
+	})
+	for _, d := range diagnostics {
+		if _, writeErr := fmt.Fprintf(stderr, "%s: %s: %s\n", displayPosition(d.Position), d.Rule, d.Message); writeErr != nil {
+			return 2
+		}
+		if d.Suggestion != "" {
+			if _, writeErr := fmt.Fprintf(stderr, "  help: %s\n", d.Suggestion); writeErr != nil {
+				return 2
+			}
+		}
 	}
+	for _, lintErr := range lintErrors {
+		if _, writeErr := fmt.Fprintf(stderr, "repolint: %v\n", lintErr); writeErr != nil {
+			return 2
+		}
+	}
+	if !*quiet && len(lintErrors) == 0 {
+		summary := fmt.Sprintf("repolint: %d %s in %d %s", len(diagnostics), plural(len(diagnostics), "issue"), stats.Files, plural(stats.Files, "file"))
+		if opts.fix {
+			action := "fixed"
+			if opts.diff {
+				action = "would fix"
+			}
+			summary += fmt.Sprintf("; %s %d %s", action, stats.Changed, plural(stats.Changed, "file"))
+		}
+		if _, writeErr := fmt.Fprintln(stderr, summary); writeErr != nil {
+			return 2
+		}
+	}
+	if len(lintErrors) > 0 {
+		return 2
+	}
+	if len(diagnostics) > 0 {
+		return 1
+	}
+	return 0
+}
+
+func printFailure(output io.Writer, err error) int {
+	_, writeErr := fmt.Fprintf(output, "repolint: %v\n", err)
+	if writeErr != nil {
+		return 2
+	}
+	return 2
+}
+
+func plural(count int, word string) string {
+	if count == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+func displayPosition(position token.Position) string {
+	path := position.Filename
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		if rel, relErr := filepath.Rel(cwd, path); relErr == nil {
+			path = rel
+		}
+	}
+	return fmt.Sprintf("%s:%d:%d", filepath.ToSlash(path), position.Line, position.Column)
 }
 
 func lintRoot(root string, opts options, report reporter) error {
@@ -152,6 +200,9 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 	}
 	if opts.cfg.Files.ExcludeGenerated && ast.IsGenerated(file) {
 		return nil
+	}
+	if opts.stats != nil {
+		opts.stats.Files++
 	}
 	rel, relErr := filepath.Rel(opts.base, path)
 	if relErr != nil {
