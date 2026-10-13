@@ -203,8 +203,8 @@ func lintRoot(root string, opts options, report reporter) error {
 	if opts.fix {
 		return planFixes(root, opts, report)
 	}
-	if rule := cfg.Rules[ruleDiscardedCleanup]; rule.Enabled && rule.TypeCheck {
-		index, typeErr := loadTypeIndex(root, opts, rule)
+	if requiresTypes(cfg) {
+		index, typeErr := loadTypeIndex(root, opts)
 		if typeErr != nil {
 			return typeErr
 		}
@@ -271,7 +271,7 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 		lintNativeLengths(fset, file, emit, rule)
 	}
 	if rule := opts.cfg.Rules[ruleSubprocessContext]; rule.applies(rel) {
-		lintSubprocessContexts(fset, file, emit, rule)
+		lintSubprocessContexts(fset, file, emit, rule, opts.types)
 	}
 	if rule := opts.cfg.Rules[ruleBlockingLock]; rule.applies(rel) {
 		lintBlockingUnderLock(fset, file, emit, rule)

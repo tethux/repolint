@@ -97,7 +97,7 @@ func lintCleanupContexts(fset *token.FileSet, file *ast.File, report reporter, r
 	lintContextBindings(fset, file, report, rule, ruleCleanupContext, false)
 }
 
-func lintContextBindings(fset *token.FileSet, file *ast.File, report reporter, rule RuleConfig, ruleName string, allowParameters bool) {
+func lintContextBindings(fset *token.FileSet, file *ast.File, report reporter, rule RuleConfig, ruleName string, allowParameters bool, indexes ...*typeIndex) {
 	imports := importAliases(file)
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
@@ -106,6 +106,7 @@ func lintContextBindings(fset *token.FileSet, file *ast.File, report reporter, r
 		}
 		bindings := map[*ast.Object]token.Pos{}
 		invalid := map[*ast.Object]bool{}
+		sources := map[*ast.Object][]*ast.Object{}
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
 			switch value := node.(type) {
 			case *ast.AssignStmt:
@@ -118,8 +119,19 @@ func lintContextBindings(fset *token.FileSet, file *ast.File, report reporter, r
 					if index == 0 && len(value.Rhs) == 1 {
 						factory, _ = ast.Unparen(value.Rhs[0]).(*ast.CallExpr)
 					}
-					if factory != nil && value.Tok == token.DEFINE && ident.Obj.Decl == value && slices.Contains(rule.ContextFactories, cleanupCallName(factory, imports)) {
-						bindings[ident.Obj] = value.End()
+					if factory != nil && (allowParameters || (value.Tok == token.DEFINE && ident.Obj.Decl == value)) && slices.Contains(rule.ContextFactories, resolvedCallName(fset, factory, imports, indexes...)) {
+						if previous, found := bindings[ident.Obj]; !found || value.End() < previous {
+							bindings[ident.Obj] = value.End()
+						}
+					} else if allowParameters && len(value.Rhs) == len(value.Lhs) {
+						if source, ok := ast.Unparen(value.Rhs[index]).(*ast.Ident); ok && source.Obj != nil {
+							sources[ident.Obj] = append(sources[ident.Obj], source.Obj)
+							if previous, found := bindings[ident.Obj]; !found || value.End() < previous {
+								bindings[ident.Obj] = value.End()
+							}
+						} else {
+							invalid[ident.Obj] = true
+						}
 					} else {
 						invalid[ident.Obj] = true
 					}
@@ -133,6 +145,43 @@ func lintContextBindings(fset *token.FileSet, file *ast.File, report reporter, r
 			}
 			return true
 		})
+		isParameter := func(object *ast.Object) bool {
+			field, ok := object.Decl.(*ast.Field)
+			if !ok {
+				return false
+			}
+			selector, yes := field.Type.(*ast.SelectorExpr)
+			if !yes || selector.Sel.Name != "Context" {
+				return false
+			}
+			pkg, ok := selector.X.(*ast.Ident)
+			return ok && imports[pkg.Name] == "context"
+		}
+		var safe func(*ast.Object, map[*ast.Object]bool) bool
+		safe = func(object *ast.Object, visiting map[*ast.Object]bool) bool {
+			if object == nil || invalid[object] || visiting[object] {
+				return false
+			}
+			visiting[object] = true
+			defer delete(visiting, object)
+			origin := allowParameters && isParameter(object)
+			if _, found := bindings[object]; found && len(sources[object]) == 0 {
+				origin = true
+			}
+			if len(sources[object]) > 0 {
+				origin = true
+				for _, source := range sources[object] {
+					if source == object && isParameter(object) {
+						continue
+					}
+					if !safe(source, visiting) {
+						return false
+					}
+				}
+			}
+			return origin
+		}
+
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
 			call, isCall := node.(*ast.CallExpr)
 			if !isCall || !matchesCall(cleanupCallName(call, imports), rule.Calls) || ignored(file, fset, call.Pos(), ruleName) {
@@ -142,16 +191,7 @@ func lintContextBindings(fset *token.FileSet, file *ast.File, report reporter, r
 			if rule.ContextArg < len(call.Args) {
 				if ident, isIdent := ast.Unparen(call.Args[rule.ContextArg]).(*ast.Ident); isIdent && ident.Obj != nil {
 					bound, found := bindings[ident.Obj]
-					approved = found && !invalid[ident.Obj] && bound < call.Pos()
-					if allowParameters && !invalid[ident.Obj] {
-						if field, ok := ident.Obj.Decl.(*ast.Field); ok {
-							if selector, yes := field.Type.(*ast.SelectorExpr); yes && selector.Sel.Name == "Context" {
-								if pkg, ok := selector.X.(*ast.Ident); ok && imports[pkg.Name] == "context" {
-									approved = true
-								}
-							}
-						}
-					}
+					approved = safe(ident.Obj, map[*ast.Object]bool{}) && ((found && bound < call.Pos()) || (allowParameters && isParameter(ident.Obj)))
 				}
 			}
 			if !approved {

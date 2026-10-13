@@ -18,30 +18,35 @@ type sourceLocation struct {
 	Line, Column int
 }
 type typeIndex struct {
-	files map[string]bool
-	calls map[sourceLocation]*types.Signature
+	files   map[string]bool
+	calls   map[sourceLocation]*types.Signature
+	symbols map[sourceLocation]string
 }
 
 func location(pos token.Position) sourceLocation {
 	return sourceLocation{filepath.Clean(pos.Filename), pos.Line, pos.Column}
 }
 
-func loadTypeIndex(root string, opts options, rule RuleConfig, overlays ...map[string][]byte) (*typeIndex, error) {
+func loadTypeIndex(root string, opts options, overlays ...map[string][]byte) (*typeIndex, error) {
 	directories := map[string]bool{}
+	includeTests := false
 	collectErr := walkSource(root, opts, func(file string, _ []byte) error {
 		rel, relErr := filepath.Rel(opts.base, file)
 		if relErr != nil {
 			return failure("resolve typed source", relErr)
 		}
-		if rule.applies(filepath.ToSlash(rel)) {
-			directories[filepath.Dir(file)] = true
+		for _, rule := range opts.cfg.Rules {
+			if rule.TypeCheck && rule.applies(filepath.ToSlash(rel)) {
+				directories[filepath.Dir(file)] = true
+				includeTests = includeTests || rule.IncludeTests
+			}
 		}
 		return nil
 	})
 	if collectErr != nil {
 		return nil, collectErr
 	}
-	index := &typeIndex{files: map[string]bool{}, calls: map[sourceLocation]*types.Signature{}}
+	index := &typeIndex{files: map[string]bool{}, calls: map[sourceLocation]*types.Signature{}, symbols: map[sourceLocation]string{}}
 	if len(directories) == 0 {
 		return index, nil
 	}
@@ -52,7 +57,7 @@ func loadTypeIndex(root string, opts options, rule RuleConfig, overlays ...map[s
 	slices.Sort(patterns)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	config := &packages.Config{Context: ctx, Dir: opts.base, Mode: packages.LoadSyntax, Tests: rule.IncludeTests}
+	config := &packages.Config{Context: ctx, Dir: opts.base, Mode: packages.LoadSyntax, Tests: includeTests}
 	if len(overlays) != 0 {
 		config.Overlay = overlays[0]
 	}
@@ -81,7 +86,29 @@ func loadTypeIndex(root string, opts options, rule RuleConfig, overlays ...map[s
 					return true
 				}
 				if signature, isSignature := pkg.TypesInfo.TypeOf(call.Fun).(*types.Signature); isSignature {
-					index.calls[location(pkg.Fset.Position(call.Pos()))] = signature
+					key := location(pkg.Fset.Position(call.Pos()))
+					index.calls[key] = signature
+					var object types.Object
+					switch fun := call.Fun.(type) {
+					case *ast.Ident:
+						object = pkg.TypesInfo.Uses[fun]
+					case *ast.SelectorExpr:
+						object = pkg.TypesInfo.Uses[fun.Sel]
+					}
+					if function, yes := object.(*types.Func); yes && function.Pkg() != nil {
+						symbol := function.Pkg().Path() + "."
+						methodSignature, hasSignature := function.Type().(*types.Signature)
+						if hasSignature && methodSignature.Recv() != nil {
+							receiver := methodSignature.Recv().Type()
+							if pointer, ok := receiver.(*types.Pointer); ok {
+								receiver = pointer.Elem()
+							}
+							if named, ok := receiver.(*types.Named); ok {
+								symbol += named.Obj().Name() + "."
+							}
+						}
+						index.symbols[key] = symbol + function.Name()
+					}
 				}
 				return true
 			})
@@ -125,4 +152,22 @@ func lintTypedCleanup(fset *token.FileSet, file *ast.File, report reporter, rule
 		return failure("type information missing for cleanup call in "+fset.Position(file.Pos()).Filename, nil)
 	}
 	return nil
+}
+
+func requiresTypes(cfg Config) bool {
+	for _, rule := range cfg.Rules {
+		if rule.Enabled && rule.TypeCheck {
+			return true
+		}
+	}
+	return false
+}
+
+func resolvedCallName(fset *token.FileSet, call *ast.CallExpr, imports map[string]string, indexes ...*typeIndex) string {
+	if len(indexes) > 0 && indexes[0] != nil {
+		if symbol, found := indexes[0].symbols[location(fset.Position(call.Pos()))]; found {
+			return symbol
+		}
+	}
+	return cleanupCallName(call, imports)
 }
