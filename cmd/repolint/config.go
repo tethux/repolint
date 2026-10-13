@@ -28,6 +28,9 @@ type FileConfig struct {
 }
 
 type RuleConfig struct {
+	Functions        []string          `toml:"functions"`
+	ContextFactories []string          `toml:"context_factories"`
+	ContextArg       int               `toml:"context_arg"`
 	Boundaries       []PackageBoundary `toml:"boundaries"`
 	source           *ast.File
 	positions        *token.FileSet
@@ -63,6 +66,8 @@ func defaultConfig() Config {
 	return Config{Schema: 1, Files: FileConfig{ExcludeDirs: []string{".git", ".jj", "vendor", "node_modules", "build"}, ExcludeGenerated: true}, Rules: map[string]RuleConfig{
 		ruleNoAny:              {Enabled: true, Paths: []string{"."}, Fix: "off"},
 		rulePackageBoundaries:  {Paths: []string{"."}, Fix: "off"},
+		ruleDiscardedCleanup:   {Paths: []string{"."}, Fix: "off", Calls: []string{"*.Release"}},
+		ruleCleanupContext:     {Paths: []string{"."}, Fix: "off", Calls: []string{"*.Release"}, Functions: []string{"rollback"}},
 		ruleStructuredError:    {Paths: []string{"."}, Fix: "off", ErrorPackage: "errs", SentinelPrefix: "Err", Dialect: "constructors", NewConstructor: "New", WrapConstructor: "Wrap", ConstructorRoles: []string{"operation", "kind", "target"}},
 		ruleErrorComparison:    {Enabled: true, Paths: []string{"."}, Fix: "off", ErrorPackages: []string{"errs"}, SentinelPrefix: "Err"},
 		ruleExpensiveAssertion: {Paths: []string{"."}, Fix: "safe", Calls: []string{"assertValid*", "assertInvariants*"}, Guard: "assert.Enabled"},
@@ -123,11 +128,13 @@ func loadConfig(root, explicit string) (Config, string, error) {
 			Schema int        `toml:"schema"`
 			Files  FileConfig `toml:"files"`
 			Rules  struct {
-				Assertions RuleConfig `toml:"expensive-assertion"`
-				Structured RuleConfig `toml:"structured-error"`
-				Comparison RuleConfig `toml:"direct-error-comparison"`
-				NoAny      RuleConfig `toml:"no-any"`
-				Boundaries RuleConfig `toml:"package-boundaries"`
+				Assertions      RuleConfig `toml:"expensive-assertion"`
+				Structured      RuleConfig `toml:"structured-error"`
+				Comparison      RuleConfig `toml:"direct-error-comparison"`
+				NoAny           RuleConfig `toml:"no-any"`
+				Boundaries      RuleConfig `toml:"package-boundaries"`
+				CleanupErrors   RuleConfig `toml:"no-discarded-cleanup-error"`
+				CleanupContexts RuleConfig `toml:"cleanup-context-policy"`
 			} `toml:"rules"`
 		}{Schema: cfg.Schema, Files: cfg.Files}
 		wire.Rules.Assertions = cfg.Rules[ruleExpensiveAssertion]
@@ -135,6 +142,8 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		wire.Rules.Comparison = cfg.Rules[ruleErrorComparison]
 		wire.Rules.NoAny = cfg.Rules[ruleNoAny]
 		wire.Rules.Boundaries = cfg.Rules[rulePackageBoundaries]
+		wire.Rules.CleanupErrors = cfg.Rules[ruleDiscardedCleanup]
+		wire.Rules.CleanupContexts = cfg.Rules[ruleCleanupContext]
 		decodeErr := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&wire)
 		if decodeErr != nil {
 			return Config{}, "", failure("decode configuration", decodeErr)
@@ -146,6 +155,8 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		cfg.Rules[ruleErrorComparison] = wire.Rules.Comparison
 		cfg.Rules[ruleNoAny] = wire.Rules.NoAny
 		cfg.Rules[rulePackageBoundaries] = wire.Rules.Boundaries
+		cfg.Rules[ruleDiscardedCleanup] = wire.Rules.CleanupErrors
+		cfg.Rules[ruleCleanupContext] = wire.Rules.CleanupContexts
 	}
 	if validateErr := cfg.validate(); validateErr != nil {
 		return Config{}, "", validateErr
@@ -158,11 +169,38 @@ func (cfg Config) validate() error {
 		return failure("configuration schema must be 1", nil)
 	}
 	for name, rule := range cfg.Rules {
-		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries}, name) {
+		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext}, name) {
 			return failure("unknown rule: "+name, nil)
 		}
 		if rule.Fix != "off" && rule.Fix != "safe" && rule.Fix != "structural" {
 			return failure("invalid fix mode for "+name, nil)
+		}
+		if name == ruleDiscardedCleanup || name == ruleCleanupContext {
+			if rule.Fix != "off" {
+				return failure(name+" is diagnostic only", nil)
+			}
+			if len(rule.Calls) == 0 {
+				return failure(name+" requires cleanup calls", nil)
+			}
+			for _, pattern := range append(slices.Clone(rule.Calls), rule.Functions...) {
+				if pattern == "" {
+					return failure("empty cleanup pattern", nil)
+				}
+				if _, matchErr := path.Match(pattern, "call"); matchErr != nil {
+					return failure("invalid cleanup pattern", matchErr)
+				}
+			}
+			if name == ruleCleanupContext {
+				if rule.ContextArg < 0 || len(rule.Functions) == 0 || (rule.Enabled && len(rule.ContextFactories) == 0) {
+					return failure("cleanup-context-policy requires functions, context_factories, and a nonnegative context_arg", nil)
+				}
+				for _, factory := range rule.ContextFactories {
+					packagePath, function, found := splitCallSymbol(factory)
+					if !found || !validImportPrefix(packagePath) || !validIdentifier(function) {
+						return failure("context factory must be an exact import-path.Function symbol", nil)
+					}
+				}
+			}
 		}
 		if name == rulePackageBoundaries {
 			if rule.Fix != "off" {

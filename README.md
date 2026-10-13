@@ -20,6 +20,8 @@ go run github.com/tethux/repolint/cmd/repolint@v0.2.1 .
 - `structured-error`: use the repository's error constructors or operation type.
 - `expensive-assertion`: guard expensive checks with the configured condition.
 - `package-boundaries`: restrict dependency direction with scoped import policies.
+- `no-discarded-cleanup-error`: report ignored errors from configured cleanup calls.
+- `cleanup-context-policy`: require approved context factories in rollback functions.
 
 The first two rules run by default. Enable the others in `.repolint.toml`:
 

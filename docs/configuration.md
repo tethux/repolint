@@ -109,6 +109,29 @@ allow_imports = ["example.org/project/virt/contract"]
 
 `from` and `exclude_dirs` accept repository-relative file or directory prefixes. `deny_imports` matches the named import and its subpackages, with path-segment boundaries. `allow_imports` exempts exact imports only. Globs are not accepted. Policies have unique nonempty names and require both source scopes and denied imports. Import aliases, dot imports, and blank imports are checked. Tests require `include_tests = true`; generated-file exclusions still apply. This opt-in rule is diagnostic only.
 
+## Cleanup policies
+
+```toml
+[rules.no-discarded-cleanup-error]
+enabled = true
+paths = ["virt"]
+calls = ["*.Release", "os.Remove"]
+
+[rules.cleanup-context-policy]
+enabled = true
+paths = ["virt"]
+calls = ["*.Release"]
+functions = ["rollback"]
+context_factories = ["example.org/project/internal/cleanup.NewContext"]
+context_arg = 0
+```
+
+Both opt-in rules are diagnostic only. Configure calls whose final result is an error. Imported function patterns use canonical import paths, so aliases cannot bypass a policy. Method calls use `receiver.Method`; `*.Release` selects any receiver's Release method within the configured paths. Patterns follow Go's `path.Match`, where `*` does not cross `/`. This is syntax analysis, not type resolution.
+
+The error rule checks blank assignments, standalone calls, `defer`, and `go` statements. It does not prove that an assigned error is subsequently handled. A deferred closure that joins a cleanup error is allowed.
+
+The context rule examines functions matching `functions`. Cleanup's `context_arg` must name a local variable declared by a configured factory in that function. Shadowed variables, reassignments, address escapes, and forwarded aliases are rejected conservatively. A direct `context.WithoutCancel` call is rejected. The factory's implementation must provide bounded, cancellation-independent cleanup; the rule trusts this contract and does not verify timeouts or cancellation of the factory's returned context. Helper forwarding and general control flow require a narrow, documented suppression. Rules retain the usual path, test, generated-file, and suppression behavior.
+
 ## Applying fixes
 
 `fix = "off"` disables edits. `"safe"` permits local rewrites. `"structural"` additionally permits category and error-domain edits when `--allow-structural` is supplied. `--fix-rules` further restricts the permitted rules.

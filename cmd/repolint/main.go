@@ -22,6 +22,8 @@ const (
 	ruleErrorComparison    = "direct-error-comparison"
 	ruleNoAny              = "no-any"
 	rulePackageBoundaries  = "package-boundaries"
+	ruleDiscardedCleanup   = "no-discarded-cleanup-error"
+	ruleCleanupContext     = "cleanup-context-policy"
 )
 
 type diagnostic struct {
@@ -232,6 +234,12 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 	}
 	if rule := opts.cfg.Rules[rulePackageBoundaries]; rule.applies(rel) {
 		lintPackageBoundaries(fset, file, rel, emit, rule)
+	}
+	if rule := opts.cfg.Rules[ruleDiscardedCleanup]; rule.applies(rel) {
+		lintDiscardedCleanup(fset, file, emit, rule)
+	}
+	if rule := opts.cfg.Rules[ruleCleanupContext]; rule.applies(rel) {
+		lintCleanupContexts(fset, file, emit, rule)
 	}
 	return nil
 }
