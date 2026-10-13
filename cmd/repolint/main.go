@@ -46,6 +46,7 @@ type diagnostic struct {
 type reporter func(diagnostic)
 
 type options struct {
+	requiredRules   string
 	unsuppressed    bool
 	types           *typeIndex
 	fix             bool
@@ -80,6 +81,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.BoolVar(&opts.allowStructural, "allow-structural", false, "allow configured error-domain edits (requires --fix)")
 	flags.StringVar(&opts.fixRules, "fix-rules", "", "only fix these comma-separated rules")
 	flags.StringVar(&opts.configPath, "config", "", "read configuration from this file")
+	flags.StringVar(&opts.requiredRules, "require-rules", "", "require these comma-separated rules to remain enabled")
 	quiet := flags.Bool("quiet", false, "omit the summary")
 	showVersion := flags.Bool("version", false, "print the version")
 	colorMode := flags.String("color", "auto", "color diagnostics: auto, always, never")
@@ -194,6 +196,14 @@ func lintRoot(root string, opts options, report reporter) error {
 	}
 	opts.cfg = cfg
 	opts.base = base
+	if opts.requiredRules != "" {
+		for _, name := range strings.Split(opts.requiredRules, ",") {
+			rule, exists := cfg.Rules[name]
+			if !exists || !rule.Enabled || len(rule.Paths) == 0 {
+				return failure("required rule is unknown, disabled, or unscoped: "+name, nil)
+			}
+		}
+	}
 	if opts.fixRules != "" {
 		for _, name := range strings.Split(opts.fixRules, ",") {
 			if _, exists := cfg.Rules[name]; !exists {
