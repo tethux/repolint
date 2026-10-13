@@ -223,6 +223,16 @@ func (cfg Config) validate() error {
 		return failure("configuration schema must be 1", nil)
 	}
 	for name, rule := range cfg.Rules {
+		for _, patterns := range [][]string{rule.Calls, rule.Functions, rule.ExcludeCalls, rule.ExcludeFunctions, rule.Locks, rule.AssumeLockedFunctions, rule.Sources} {
+			for _, pattern := range patterns {
+				if pattern == "" {
+					return failure("empty pattern for "+name, nil)
+				}
+				if _, matchErr := path.Match(pattern, "value"); matchErr != nil {
+					return failure("invalid pattern for "+name, matchErr)
+				}
+			}
+		}
 		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation, ruleNativeLength, ruleSubprocessContext, ruleBlockingLock, ruleSuppression, ruleSchemaDrift}, name) {
 			return failure("unknown rule: "+name, nil)
 		}
