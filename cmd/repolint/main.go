@@ -26,6 +26,7 @@ const (
 	ruleCleanupContext     = "cleanup-context-policy"
 	ruleNativeLock         = "native-call-lock"
 	ruleNativeAllocation   = "native-allocation"
+	ruleNativeLength       = "native-length"
 )
 
 type diagnostic struct {
@@ -258,6 +259,9 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 	}
 	if rule := opts.cfg.Rules[ruleNativeAllocation]; rule.applies(rel) {
 		lintNativeAllocations(fset, file, emit, rule)
+	}
+	if rule := opts.cfg.Rules[ruleNativeLength]; rule.applies(rel) {
+		lintNativeLengths(fset, file, emit, rule)
 	}
 	return nil
 }

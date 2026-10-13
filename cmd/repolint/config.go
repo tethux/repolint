@@ -33,6 +33,7 @@ type FileConfig struct {
 }
 
 type RuleConfig struct {
+	Sources          []string          `toml:"sources"`
 	Allocators       map[string]string `toml:"allocators"`
 	ExcludeCalls     []string          `toml:"exclude_calls"`
 	ExcludeFunctions []string          `toml:"exclude_functions"`
@@ -73,6 +74,7 @@ type PackageBoundary struct {
 
 func defaultConfig() Config {
 	return Config{Schema: 1, Files: FileConfig{ExcludeDirs: []string{".git", ".jj", "vendor", "node_modules", "build"}, ExcludeGenerated: true}, Rules: map[string]RuleConfig{
+		ruleNativeLength:       {Paths: []string{"."}, Fix: "off", Sources: []string{"*.size", "*.payload_len"}},
 		ruleNativeAllocation:   {Paths: []string{"."}, Fix: "off", Allocators: map[string]string{"C.CString": "C.free"}},
 		ruleNativeLock:         {Paths: []string{"."}, Fix: "off", Calls: []string{"C.dyn_*"}, Guard: "runtimeMu"},
 		ruleNoAny:              {Enabled: true, Paths: []string{"."}, Fix: "off"},
@@ -149,6 +151,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 				CleanupContexts   RuleConfig `toml:"cleanup-context-policy"`
 				NativeLocks       RuleConfig `toml:"native-call-lock"`
 				NativeAllocations RuleConfig `toml:"native-allocation"`
+				NativeLengths     RuleConfig `toml:"native-length"`
 			} `toml:"rules"`
 		}{Schema: cfg.Schema, Files: cfg.Files}
 		wire.Rules.Assertions = cfg.Rules[ruleExpensiveAssertion]
@@ -160,6 +163,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		wire.Rules.CleanupContexts = cfg.Rules[ruleCleanupContext]
 		wire.Rules.NativeLocks = cfg.Rules[ruleNativeLock]
 		wire.Rules.NativeAllocations = cfg.Rules[ruleNativeAllocation]
+		wire.Rules.NativeLengths = cfg.Rules[ruleNativeLength]
 		decodeErr := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&wire)
 		if decodeErr != nil {
 			return Config{}, "", failure("decode configuration", decodeErr)
@@ -176,6 +180,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		cfg.Rules[ruleCleanupContext] = wire.Rules.CleanupContexts
 		cfg.Rules[ruleNativeLock] = wire.Rules.NativeLocks
 		cfg.Rules[ruleNativeAllocation] = wire.Rules.NativeAllocations
+		cfg.Rules[ruleNativeLength] = wire.Rules.NativeLengths
 	}
 	if validateErr := cfg.validate(); validateErr != nil {
 		return Config{}, "", validateErr
@@ -188,11 +193,21 @@ func (cfg Config) validate() error {
 		return failure("configuration schema must be 1", nil)
 	}
 	for name, rule := range cfg.Rules {
-		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation}, name) {
+		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation, ruleNativeLength}, name) {
 			return failure("unknown rule: "+name, nil)
 		}
 		if rule.Fix != "off" && rule.Fix != "safe" && rule.Fix != "structural" {
 			return failure("invalid fix mode for "+name, nil)
+		}
+		if name == ruleNativeLength {
+			if rule.Fix != "off" || len(rule.Sources) == 0 {
+				return failure("native-length requires sources and fix=off", nil)
+			}
+			for _, pattern := range rule.Sources {
+				if _, matchErr := path.Match(pattern, "value"); matchErr != nil {
+					return failure("invalid native length source", matchErr)
+				}
+			}
 		}
 		if name == ruleNativeAllocation {
 			if rule.Fix != "off" || len(rule.Allocators) == 0 {
