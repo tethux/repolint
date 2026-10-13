@@ -25,7 +25,7 @@ func TestCLIOutputAndExitCodes(t *testing.T) {
 	if status := run([]string{"--quiet", path}, &stdout, &stderr); status != 0 || stderr.Len() != 0 {
 		t.Fatalf("quiet: exit=%d output=%q", status, stderr.String())
 	}
-	if status := run([]string{"--version"}, &stdout, &stderr); status != 0 || stdout.String() != "repolint 0.2.1\n" {
+	if status := run([]string{"--version"}, &stdout, &stderr); status != 0 || stdout.String() != "repolint 0.3.0\n" {
 		t.Fatalf("version: exit=%d output=%q", status, stdout.String())
 	}
 	stderr.Reset()

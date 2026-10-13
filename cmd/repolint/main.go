@@ -60,7 +60,7 @@ type options struct {
 	output          io.Writer
 }
 
-const version = "0.2.1"
+const version = "0.3.0"
 
 type runStats struct {
 	Files   int

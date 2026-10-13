@@ -3,14 +3,14 @@
 A Go linter for structured errors, assertion guards, and explicit types.
 
 ```sh
-go get -tool github.com/tethux/repolint/cmd/repolint@v0.2.1
+go get -tool github.com/tethux/repolint/cmd/repolint@v0.3.0
 go tool repolint .
 ```
 
 Requires Go 1.26.4 or newer. For a one-off check:
 
 ```sh
-go run github.com/tethux/repolint/cmd/repolint@v0.2.1 .
+go run github.com/tethux/repolint/cmd/repolint@v0.3.0 .
 ```
 
 ## Rules
