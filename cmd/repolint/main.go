@@ -29,6 +29,7 @@ const (
 	ruleNativeLength       = "native-length"
 	ruleSubprocessContext  = "subprocess-context"
 	ruleBlockingLock       = "blocking-under-lock"
+	ruleSuppression        = "suppression-policy"
 )
 
 type diagnostic struct {
@@ -44,6 +45,7 @@ type diagnostic struct {
 type reporter func(diagnostic)
 
 type options struct {
+	unsuppressed    bool
 	types           *typeIndex
 	fix             bool
 	diff            bool
@@ -220,6 +222,9 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 	if opts.cfg.Files.ExcludeGenerated && ast.IsGenerated(file) {
 		return nil
 	}
+	if opts.unsuppressed {
+		file.Comments = nil
+	}
 	if opts.stats != nil {
 		opts.stats.Files++
 	}
@@ -270,6 +275,16 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 	}
 	if rule := opts.cfg.Rules[ruleBlockingLock]; rule.applies(rel) {
 		lintBlockingUnderLock(fset, file, emit, rule)
+	}
+	if rule := opts.cfg.Rules[ruleSuppression]; !opts.unsuppressed && rule.applies(rel) {
+		rawOpts := opts
+		rawOpts.unsuppressed = true
+		rawOpts.stats = nil
+		var raw []diagnostic
+		if auditErr := lintSource(path, src, rawOpts, func(d diagnostic) { raw = append(raw, d) }); auditErr != nil {
+			return auditErr
+		}
+		lintSuppressions(fset, file, emit, opts.cfg, rule, raw)
 	}
 	return nil
 }
