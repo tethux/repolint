@@ -33,6 +33,7 @@ type FileConfig struct {
 }
 
 type RuleConfig struct {
+	Allocators       map[string]string `toml:"allocators"`
 	ExcludeCalls     []string          `toml:"exclude_calls"`
 	ExcludeFunctions []string          `toml:"exclude_functions"`
 	TypeCheck        bool              `toml:"type_check"`
@@ -72,6 +73,7 @@ type PackageBoundary struct {
 
 func defaultConfig() Config {
 	return Config{Schema: 1, Files: FileConfig{ExcludeDirs: []string{".git", ".jj", "vendor", "node_modules", "build"}, ExcludeGenerated: true}, Rules: map[string]RuleConfig{
+		ruleNativeAllocation:   {Paths: []string{"."}, Fix: "off", Allocators: map[string]string{"C.CString": "C.free"}},
 		ruleNativeLock:         {Paths: []string{"."}, Fix: "off", Calls: []string{"C.dyn_*"}, Guard: "runtimeMu"},
 		ruleNoAny:              {Enabled: true, Paths: []string{"."}, Fix: "off"},
 		rulePackageBoundaries:  {Paths: []string{"."}, Fix: "off"},
@@ -138,14 +140,15 @@ func loadConfig(root, explicit string) (Config, string, error) {
 			Schema   int            `toml:"schema"`
 			Files    FileConfig     `toml:"files"`
 			Rules    struct {
-				Assertions      RuleConfig `toml:"expensive-assertion"`
-				Structured      RuleConfig `toml:"structured-error"`
-				Comparison      RuleConfig `toml:"direct-error-comparison"`
-				NoAny           RuleConfig `toml:"no-any"`
-				Boundaries      RuleConfig `toml:"package-boundaries"`
-				CleanupErrors   RuleConfig `toml:"no-discarded-cleanup-error"`
-				CleanupContexts RuleConfig `toml:"cleanup-context-policy"`
-				NativeLocks     RuleConfig `toml:"native-call-lock"`
+				Assertions        RuleConfig `toml:"expensive-assertion"`
+				Structured        RuleConfig `toml:"structured-error"`
+				Comparison        RuleConfig `toml:"direct-error-comparison"`
+				NoAny             RuleConfig `toml:"no-any"`
+				Boundaries        RuleConfig `toml:"package-boundaries"`
+				CleanupErrors     RuleConfig `toml:"no-discarded-cleanup-error"`
+				CleanupContexts   RuleConfig `toml:"cleanup-context-policy"`
+				NativeLocks       RuleConfig `toml:"native-call-lock"`
+				NativeAllocations RuleConfig `toml:"native-allocation"`
 			} `toml:"rules"`
 		}{Schema: cfg.Schema, Files: cfg.Files}
 		wire.Rules.Assertions = cfg.Rules[ruleExpensiveAssertion]
@@ -156,6 +159,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		wire.Rules.CleanupErrors = cfg.Rules[ruleDiscardedCleanup]
 		wire.Rules.CleanupContexts = cfg.Rules[ruleCleanupContext]
 		wire.Rules.NativeLocks = cfg.Rules[ruleNativeLock]
+		wire.Rules.NativeAllocations = cfg.Rules[ruleNativeAllocation]
 		decodeErr := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&wire)
 		if decodeErr != nil {
 			return Config{}, "", failure("decode configuration", decodeErr)
@@ -171,6 +175,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		cfg.Rules[ruleDiscardedCleanup] = wire.Rules.CleanupErrors
 		cfg.Rules[ruleCleanupContext] = wire.Rules.CleanupContexts
 		cfg.Rules[ruleNativeLock] = wire.Rules.NativeLocks
+		cfg.Rules[ruleNativeAllocation] = wire.Rules.NativeAllocations
 	}
 	if validateErr := cfg.validate(); validateErr != nil {
 		return Config{}, "", validateErr
@@ -183,11 +188,24 @@ func (cfg Config) validate() error {
 		return failure("configuration schema must be 1", nil)
 	}
 	for name, rule := range cfg.Rules {
-		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock}, name) {
+		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation}, name) {
 			return failure("unknown rule: "+name, nil)
 		}
 		if rule.Fix != "off" && rule.Fix != "safe" && rule.Fix != "structural" {
 			return failure("invalid fix mode for "+name, nil)
+		}
+		if name == ruleNativeAllocation {
+			if rule.Fix != "off" || len(rule.Allocators) == 0 {
+				return failure("native-allocation requires allocators and fix=off", nil)
+			}
+			for allocator, release := range rule.Allocators {
+				for _, symbol := range []string{allocator, release} {
+					prefix, function, found := splitCallSymbol(symbol)
+					if !found || !validImportPrefix(prefix) || !validIdentifier(function) {
+						return failure("invalid native allocation symbol: "+symbol, nil)
+					}
+				}
+			}
 		}
 		if name == ruleNativeLock {
 			if rule.Fix != "off" || len(rule.Calls) == 0 {
