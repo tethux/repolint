@@ -130,6 +130,8 @@ Both opt-in rules are diagnostic only. Configure calls whose final result is an 
 
 The error rule checks blank assignments, standalone calls, `defer`, and `go` statements. It does not prove that an assigned error is subsequently handled. A deferred closure that joins a cleanup error is allowed.
 
+Set `type_check = true` on `no-discarded-cleanup-error` to report only calls whose final result implements `error`. Void methods are allowed. Package loading respects `[analysis] build_tags = ["debug"]`, the Go environment, and test inclusion. Type or package-loading failures are operational errors, never a silent syntax fallback. Fixes type-check planned edits through a Go overlay before writing. Native consumers need their normal cgo build dependencies available.
+
 The context rule examines functions matching `functions`. Cleanup's `context_arg` must name a local variable declared by a configured factory in that function. Shadowed variables, reassignments, address escapes, and forwarded aliases are rejected conservatively. A direct `context.WithoutCancel` call is rejected. The factory's implementation must provide bounded, cancellation-independent cleanup; the rule trusts this contract and does not verify timeouts or cancellation of the factory's returned context. Helper forwarding and general control flow require a narrow, documented suppression. Rules retain the usual path, test, generated-file, and suppression behavior.
 
 ## Applying fixes

@@ -39,6 +39,7 @@ type diagnostic struct {
 type reporter func(diagnostic)
 
 type options struct {
+	types           *typeIndex
 	fix             bool
 	diff            bool
 	allowStructural bool
@@ -195,6 +196,13 @@ func lintRoot(root string, opts options, report reporter) error {
 	if opts.fix {
 		return planFixes(root, opts, report)
 	}
+	if rule := cfg.Rules[ruleDiscardedCleanup]; rule.Enabled && rule.TypeCheck {
+		index, typeErr := loadTypeIndex(root, opts, rule)
+		if typeErr != nil {
+			return typeErr
+		}
+		opts.types = index
+	}
 	return walkSource(root, opts, func(path string, src []byte) error { return lintSource(path, src, opts, report) })
 }
 
@@ -236,7 +244,9 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 		lintPackageBoundaries(fset, file, rel, emit, rule)
 	}
 	if rule := opts.cfg.Rules[ruleDiscardedCleanup]; rule.applies(rel) {
-		lintDiscardedCleanup(fset, file, emit, rule)
+		if cleanupErr := lintTypedCleanup(fset, file, emit, rule, opts.types); cleanupErr != nil {
+			return cleanupErr
+		}
 	}
 	if rule := opts.cfg.Rules[ruleCleanupContext]; rule.applies(rel) {
 		lintCleanupContexts(fset, file, emit, rule)

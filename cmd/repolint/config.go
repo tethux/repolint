@@ -17,9 +17,14 @@ import (
 
 // Config defines repository-relative rule scopes and permitted fixes.
 type Config struct {
-	Schema int                   `toml:"schema"`
-	Files  FileConfig            `toml:"files"`
-	Rules  map[string]RuleConfig `toml:"rules"`
+	Analysis AnalysisConfig        `toml:"analysis"`
+	Schema   int                   `toml:"schema"`
+	Files    FileConfig            `toml:"files"`
+	Rules    map[string]RuleConfig `toml:"rules"`
+}
+
+type AnalysisConfig struct {
+	BuildTags []string `toml:"build_tags"`
 }
 
 type FileConfig struct {
@@ -28,6 +33,7 @@ type FileConfig struct {
 }
 
 type RuleConfig struct {
+	TypeCheck        bool              `toml:"type_check"`
 	Functions        []string          `toml:"functions"`
 	ContextFactories []string          `toml:"context_factories"`
 	ContextArg       int               `toml:"context_arg"`
@@ -125,9 +131,10 @@ func loadConfig(root, explicit string) (Config, string, error) {
 			return Config{}, "", failure("read configuration", readErr)
 		}
 		wire := struct {
-			Schema int        `toml:"schema"`
-			Files  FileConfig `toml:"files"`
-			Rules  struct {
+			Analysis AnalysisConfig `toml:"analysis"`
+			Schema   int            `toml:"schema"`
+			Files    FileConfig     `toml:"files"`
+			Rules    struct {
 				Assertions      RuleConfig `toml:"expensive-assertion"`
 				Structured      RuleConfig `toml:"structured-error"`
 				Comparison      RuleConfig `toml:"direct-error-comparison"`
@@ -149,6 +156,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 			return Config{}, "", failure("decode configuration", decodeErr)
 		}
 		cfg.Schema = wire.Schema
+		cfg.Analysis = wire.Analysis
 		cfg.Files = wire.Files
 		cfg.Rules[ruleExpensiveAssertion] = wire.Rules.Assertions
 		cfg.Rules[ruleStructuredError] = wire.Rules.Structured

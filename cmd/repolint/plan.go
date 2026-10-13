@@ -224,6 +224,17 @@ func planInStage(root, stage string, opts options, report reporter) error {
 		return collectErr
 	}
 	slices.SortFunc(edits, func(a, b fileEdit) int { return strings.Compare(a.Path, b.Path) })
+	if rule := opts.cfg.Rules[ruleDiscardedCleanup]; rule.Enabled && rule.TypeCheck {
+		overlay := map[string][]byte{}
+		for _, edit := range edits {
+			overlay[filepath.Join(opts.base, edit.Path)] = edit.After
+		}
+		index, typeErr := loadTypeIndex(root, opts, rule, overlay)
+		if typeErr != nil {
+			return typeErr
+		}
+		opts.types = index
+	}
 	if opts.diff {
 		for _, edit := range edits {
 			if diffErr := printDiffTo(opts.output, edit); diffErr != nil {
