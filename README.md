@@ -77,4 +77,4 @@ mise run check
 mise run build
 ```
 
-AGPL-3.0. Originally part of [Tethux](https://github.com/tethux/tethux).
+MIT. Originally part of [Tethux](https://github.com/tethux/tethux).
