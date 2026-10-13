@@ -21,6 +21,7 @@ const (
 	ruleStructuredError    = "structured-error"
 	ruleErrorComparison    = "direct-error-comparison"
 	ruleNoAny              = "no-any"
+	rulePackageBoundaries  = "package-boundaries"
 )
 
 type diagnostic struct {
@@ -228,6 +229,9 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 	}
 	if rule := opts.cfg.Rules[ruleNoAny]; rule.applies(rel) {
 		lintAny(fset, file, emit)
+	}
+	if rule := opts.cfg.Rules[rulePackageBoundaries]; rule.applies(rel) {
+		lintPackageBoundaries(fset, file, rel, emit, rule)
 	}
 	return nil
 }

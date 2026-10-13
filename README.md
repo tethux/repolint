@@ -19,6 +19,7 @@ go run github.com/tethux/repolint/cmd/repolint@v0.2.1 .
 - `direct-error-comparison`: match error categories with `errors.Is`.
 - `structured-error`: use the repository's error constructors or operation type.
 - `expensive-assertion`: guard expensive checks with the configured condition.
+- `package-boundaries`: restrict dependency direction with scoped import policies.
 
 The first two rules run by default. Enable the others in `.repolint.toml`:
 

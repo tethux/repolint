@@ -28,6 +28,7 @@ type FileConfig struct {
 }
 
 type RuleConfig struct {
+	Boundaries       []PackageBoundary `toml:"boundaries"`
 	source           *ast.File
 	positions        *token.FileSet
 	Enabled          bool              `toml:"enabled"`
@@ -49,9 +50,19 @@ type RuleConfig struct {
 	ConstructorRoles []string          `toml:"constructor_roles"`
 }
 
+// PackageBoundary restricts imports from repository-relative source scopes.
+type PackageBoundary struct {
+	ExcludeDirs  []string `toml:"exclude_dirs"`
+	Name         string   `toml:"name"`
+	From         []string `toml:"from"`
+	DenyImports  []string `toml:"deny_imports"`
+	AllowImports []string `toml:"allow_imports"`
+}
+
 func defaultConfig() Config {
 	return Config{Schema: 1, Files: FileConfig{ExcludeDirs: []string{".git", ".jj", "vendor", "node_modules", "build"}, ExcludeGenerated: true}, Rules: map[string]RuleConfig{
 		ruleNoAny:              {Enabled: true, Paths: []string{"."}, Fix: "off"},
+		rulePackageBoundaries:  {Paths: []string{"."}, Fix: "off"},
 		ruleStructuredError:    {Paths: []string{"."}, Fix: "off", ErrorPackage: "errs", SentinelPrefix: "Err", Dialect: "constructors", NewConstructor: "New", WrapConstructor: "Wrap", ConstructorRoles: []string{"operation", "kind", "target"}},
 		ruleErrorComparison:    {Enabled: true, Paths: []string{"."}, Fix: "off", ErrorPackages: []string{"errs"}, SentinelPrefix: "Err"},
 		ruleExpensiveAssertion: {Paths: []string{"."}, Fix: "safe", Calls: []string{"assertValid*", "assertInvariants*"}, Guard: "assert.Enabled"},
@@ -116,12 +127,14 @@ func loadConfig(root, explicit string) (Config, string, error) {
 				Structured RuleConfig `toml:"structured-error"`
 				Comparison RuleConfig `toml:"direct-error-comparison"`
 				NoAny      RuleConfig `toml:"no-any"`
+				Boundaries RuleConfig `toml:"package-boundaries"`
 			} `toml:"rules"`
 		}{Schema: cfg.Schema, Files: cfg.Files}
 		wire.Rules.Assertions = cfg.Rules[ruleExpensiveAssertion]
 		wire.Rules.Structured = cfg.Rules[ruleStructuredError]
 		wire.Rules.Comparison = cfg.Rules[ruleErrorComparison]
 		wire.Rules.NoAny = cfg.Rules[ruleNoAny]
+		wire.Rules.Boundaries = cfg.Rules[rulePackageBoundaries]
 		decodeErr := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&wire)
 		if decodeErr != nil {
 			return Config{}, "", failure("decode configuration", decodeErr)
@@ -132,6 +145,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		cfg.Rules[ruleStructuredError] = wire.Rules.Structured
 		cfg.Rules[ruleErrorComparison] = wire.Rules.Comparison
 		cfg.Rules[ruleNoAny] = wire.Rules.NoAny
+		cfg.Rules[rulePackageBoundaries] = wire.Rules.Boundaries
 	}
 	if validateErr := cfg.validate(); validateErr != nil {
 		return Config{}, "", validateErr
@@ -144,11 +158,33 @@ func (cfg Config) validate() error {
 		return failure("configuration schema must be 1", nil)
 	}
 	for name, rule := range cfg.Rules {
-		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion}, name) {
+		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries}, name) {
 			return failure("unknown rule: "+name, nil)
 		}
 		if rule.Fix != "off" && rule.Fix != "safe" && rule.Fix != "structural" {
 			return failure("invalid fix mode for "+name, nil)
+		}
+		if name == rulePackageBoundaries {
+			if rule.Fix != "off" {
+				return failure("package-boundaries is diagnostic only", nil)
+			}
+			names := map[string]bool{}
+			for _, boundary := range rule.Boundaries {
+				if strings.TrimSpace(boundary.Name) == "" || names[boundary.Name] || len(boundary.From) == 0 || len(boundary.DenyImports) == 0 {
+					return failure("boundaries require a unique name, from paths, and deny_imports", nil)
+				}
+				names[boundary.Name] = true
+				for _, prefix := range append(slices.Clone(boundary.From), boundary.ExcludeDirs...) {
+					if !validPrefix(prefix) || strings.ContainsAny(prefix, "*?[]") {
+						return failure("invalid boundary source: "+prefix, nil)
+					}
+				}
+				for _, prefix := range append(slices.Clone(boundary.DenyImports), boundary.AllowImports...) {
+					if !validImportPrefix(prefix) {
+						return failure("invalid boundary import: "+prefix, nil)
+					}
+				}
+			}
 		}
 		for _, prefix := range append(slices.Clone(rule.Paths), rule.ExcludeDirs...) {
 			if !validPrefix(prefix) {

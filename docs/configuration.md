@@ -93,6 +93,22 @@ Without a mapping, safe fixes require an exact, unambiguous existing category me
 
 `generate_domains = true` permits a missing constructor-based error package to be created with structural fixing enabled. Supported `constructor_roles` are `["operation", "kind", "target"]`, `["provider", "kind", "target"]`, or `["kind", "target"]`. Constructor names and the sentinel prefix are configurable.
 
+## Package boundaries
+
+```toml
+[rules.package-boundaries]
+enabled = true
+include_tests = true
+
+[[rules.package-boundaries.boundaries]]
+name = "storage-is-independent"
+from = ["storage"]
+deny_imports = ["example.org/project/virt", "example.org/project/topology"]
+allow_imports = ["example.org/project/virt/contract"]
+```
+
+`from` and `exclude_dirs` accept repository-relative file or directory prefixes. `deny_imports` matches the named import and its subpackages, with path-segment boundaries. `allow_imports` exempts exact imports only. Globs are not accepted. Policies have unique nonempty names and require both source scopes and denied imports. Import aliases, dot imports, and blank imports are checked. Tests require `include_tests = true`; generated-file exclusions still apply. This opt-in rule is diagnostic only.
+
 ## Applying fixes
 
 `fix = "off"` disables edits. `"safe"` permits local rewrites. `"structural"` additionally permits category and error-domain edits when `--allow-structural` is supplied. `--fix-rules` further restricts the permitted rules.
