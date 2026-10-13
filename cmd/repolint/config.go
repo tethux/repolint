@@ -33,6 +33,8 @@ type FileConfig struct {
 }
 
 type RuleConfig struct {
+	Locks                  []string          `toml:"locks"`
+	AssumeLockedFunctions  []string          `toml:"assume_locked_functions"`
 	AllowContextParameters bool              `toml:"allow_context_parameters"`
 	Sources                []string          `toml:"sources"`
 	Allocators             map[string]string `toml:"allocators"`
@@ -75,6 +77,7 @@ type PackageBoundary struct {
 
 func defaultConfig() Config {
 	return Config{Schema: 1, Files: FileConfig{ExcludeDirs: []string{".git", ".jj", "vendor", "node_modules", "build"}, ExcludeGenerated: true}, Rules: map[string]RuleConfig{
+		ruleBlockingLock:       {Paths: []string{"."}, Fix: "off", Locks: []string{"*"}},
 		ruleSubprocessContext:  {Paths: []string{"."}, Fix: "off", Calls: []string{"os/exec.CommandContext"}, Functions: []string{"*"}, ContextFactories: []string{"context.WithTimeout", "context.WithDeadline"}, AllowContextParameters: true},
 		ruleNativeLength:       {Paths: []string{"."}, Fix: "off", Sources: []string{"*.size", "*.payload_len"}},
 		ruleNativeAllocation:   {Paths: []string{"."}, Fix: "off", Allocators: map[string]string{"C.CString": "C.free"}},
@@ -155,6 +158,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 				NativeAllocations  RuleConfig `toml:"native-allocation"`
 				NativeLengths      RuleConfig `toml:"native-length"`
 				SubprocessContexts RuleConfig `toml:"subprocess-context"`
+				BlockingLocks      RuleConfig `toml:"blocking-under-lock"`
 			} `toml:"rules"`
 		}{Schema: cfg.Schema, Files: cfg.Files}
 		wire.Rules.Assertions = cfg.Rules[ruleExpensiveAssertion]
@@ -168,6 +172,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		wire.Rules.NativeAllocations = cfg.Rules[ruleNativeAllocation]
 		wire.Rules.NativeLengths = cfg.Rules[ruleNativeLength]
 		wire.Rules.SubprocessContexts = cfg.Rules[ruleSubprocessContext]
+		wire.Rules.BlockingLocks = cfg.Rules[ruleBlockingLock]
 		decodeErr := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&wire)
 		if decodeErr != nil {
 			return Config{}, "", failure("decode configuration", decodeErr)
@@ -186,6 +191,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		cfg.Rules[ruleNativeAllocation] = wire.Rules.NativeAllocations
 		cfg.Rules[ruleNativeLength] = wire.Rules.NativeLengths
 		cfg.Rules[ruleSubprocessContext] = wire.Rules.SubprocessContexts
+		cfg.Rules[ruleBlockingLock] = wire.Rules.BlockingLocks
 	}
 	if validateErr := cfg.validate(); validateErr != nil {
 		return Config{}, "", validateErr
@@ -198,11 +204,21 @@ func (cfg Config) validate() error {
 		return failure("configuration schema must be 1", nil)
 	}
 	for name, rule := range cfg.Rules {
-		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation, ruleNativeLength, ruleSubprocessContext}, name) {
+		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation, ruleNativeLength, ruleSubprocessContext, ruleBlockingLock}, name) {
 			return failure("unknown rule: "+name, nil)
 		}
 		if rule.Fix != "off" && rule.Fix != "safe" && rule.Fix != "structural" {
 			return failure("invalid fix mode for "+name, nil)
+		}
+		if name == ruleBlockingLock {
+			if rule.Fix != "off" || len(rule.Locks) == 0 || (len(rule.AssumeLockedFunctions) > 0 && rule.Guard == "") {
+				return failure("blocking-under-lock requires locks, fix=off, and a guard for caller-held locks", nil)
+			}
+			for _, pattern := range append(slices.Clone(rule.Locks), rule.Calls...) {
+				if _, matchErr := path.Match(pattern, "value"); matchErr != nil {
+					return failure("invalid blocking lock pattern", matchErr)
+				}
+			}
 		}
 		if name == ruleNativeLength {
 			if rule.Fix != "off" || len(rule.Sources) == 0 {

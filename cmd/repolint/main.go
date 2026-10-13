@@ -28,6 +28,7 @@ const (
 	ruleNativeAllocation   = "native-allocation"
 	ruleNativeLength       = "native-length"
 	ruleSubprocessContext  = "subprocess-context"
+	ruleBlockingLock       = "blocking-under-lock"
 )
 
 type diagnostic struct {
@@ -266,6 +267,9 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 	}
 	if rule := opts.cfg.Rules[ruleSubprocessContext]; rule.applies(rel) {
 		lintSubprocessContexts(fset, file, emit, rule)
+	}
+	if rule := opts.cfg.Rules[ruleBlockingLock]; rule.applies(rel) {
+		lintBlockingUnderLock(fset, file, emit, rule)
 	}
 	return nil
 }

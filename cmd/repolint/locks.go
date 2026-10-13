@@ -20,7 +20,35 @@ type lockWalker struct {
 	report      reporter
 	rule        RuleConfig
 	blocking    bool
+	nonblocking bool
 	guardObject *ast.Object
+}
+
+func lintBlockingUnderLock(fset *token.FileSet, file *ast.File, report reporter, rule RuleConfig) {
+	w := lockWalker{fset: fset, file: file, imports: importAliases(file), report: report, rule: rule, blocking: true}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || matchesCall(fn.Name.Name, rule.ExcludeFunctions) {
+			continue
+		}
+		held := lockState{}
+		if matchesCall(fn.Name.Name, rule.AssumeLockedFunctions) {
+			held[lockKey{Name: rule.Guard}] = 1
+		}
+		w.block(fn.Body, held)
+	}
+}
+
+func (w *lockWalker) reportBlocking(node ast.Node, held lockState) {
+	if ignored(w.file, w.fset, node.Pos(), ruleBlockingLock) {
+		return
+	}
+	for key, count := range held {
+		if count > 0 && matchesCall(key.Name, w.rule.Locks) {
+			w.report(diagnostic{Rule: ruleBlockingLock, Position: w.fset.Position(node.Pos()), End: w.fset.Position(node.End()), Message: "blocking operation while holding " + key.Name, Suggestion: "release the lock before blocking, or use a nonblocking select with a defined delivery policy"})
+			return
+		}
+	}
 }
 
 func lockIdentity(fset *token.FileSet, expr ast.Expr) lockKey {
@@ -100,20 +128,27 @@ func (w *lockWalker) expression(expr ast.Expr, held lockState) {
 			w.block(literal.Body, lockState{})
 			return false
 		}
+		if value, ok := node.(*ast.UnaryExpr); ok && value.Op == token.ARROW && w.blocking && !w.nonblocking {
+			w.reportBlocking(value, held)
+		}
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
 		name := cleanupCallName(call, w.imports)
 		if matchesCall(name, w.rule.Calls) && !matchesCall(name, w.rule.ExcludeCalls) {
-			protected := false
-			for key, count := range held {
-				if key.Name == w.rule.Guard && key.Object == w.guardObject && count > 0 {
-					protected = true
+			if w.blocking {
+				w.reportBlocking(call, held)
+			} else {
+				protected := false
+				for key, count := range held {
+					if key.Name == w.rule.Guard && key.Object == w.guardObject && count > 0 {
+						protected = true
+					}
 				}
-			}
-			if !protected && !ignored(w.file, w.fset, call.Pos(), ruleNativeLock) {
-				w.report(diagnostic{Rule: ruleNativeLock, Position: w.fset.Position(call.Pos()), End: w.fset.Position(call.End()), Message: "native call requires held lock " + w.rule.Guard, Suggestion: "hold the configured lock across the native operation"})
+				if !protected && !ignored(w.file, w.fset, call.Pos(), ruleNativeLock) {
+					w.report(diagnostic{Rule: ruleNativeLock, Position: w.fset.Position(call.Pos()), End: w.fset.Position(call.End()), Message: "native call requires held lock " + w.rule.Guard, Suggestion: "hold the configured lock across the native operation"})
+				}
 			}
 		}
 		selector, isSelector := call.Fun.(*ast.SelectorExpr)
@@ -230,21 +265,46 @@ func (w *lockWalker) statement(stmt ast.Stmt, held lockState) (lockState, bool) 
 			}
 		}
 	case *ast.SelectStmt:
+		nonblocking := false
+		for _, branch := range value.Body.List {
+			if clause, ok := branch.(*ast.CommClause); ok && clause.Comm == nil {
+				nonblocking = true
+			}
+		}
 		for _, branch := range value.Body.List {
 			if clause, ok := branch.(*ast.CommClause); ok {
 				branchState := maps.Clone(held)
 				if clause.Comm != nil {
+					previous := w.nonblocking
+					w.nonblocking = nonblocking
 					branchState, _ = w.statement(clause.Comm, branchState)
+					w.nonblocking = previous
 				}
 				body, _ := w.block(&ast.BlockStmt{List: clause.Body}, branchState)
 				held = intersectLocks(held, body)
 			}
 		}
 	case *ast.SendStmt:
+		if w.blocking && !w.nonblocking {
+			w.reportBlocking(value, held)
+		}
 		w.expression(value.Chan, held)
 		w.expression(value.Value, held)
 	case *ast.LabeledStmt:
 		return w.statement(value.Stmt, held)
+	case *ast.TypeSwitchStmt:
+		if value.Init != nil {
+			held, _ = w.statement(value.Init, held)
+		}
+		if value.Assign != nil {
+			held, _ = w.statement(value.Assign, held)
+		}
+		for _, branch := range value.Body.List {
+			if clause, ok := branch.(*ast.CaseClause); ok {
+				body, _ := w.block(&ast.BlockStmt{List: clause.Body}, maps.Clone(held))
+				held = intersectLocks(held, body)
+			}
+		}
 	}
 	return held, true
 }
