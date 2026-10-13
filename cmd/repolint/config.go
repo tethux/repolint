@@ -33,34 +33,35 @@ type FileConfig struct {
 }
 
 type RuleConfig struct {
-	Sources          []string          `toml:"sources"`
-	Allocators       map[string]string `toml:"allocators"`
-	ExcludeCalls     []string          `toml:"exclude_calls"`
-	ExcludeFunctions []string          `toml:"exclude_functions"`
-	TypeCheck        bool              `toml:"type_check"`
-	Functions        []string          `toml:"functions"`
-	ContextFactories []string          `toml:"context_factories"`
-	ContextArg       int               `toml:"context_arg"`
-	Boundaries       []PackageBoundary `toml:"boundaries"`
-	source           *ast.File
-	positions        *token.FileSet
-	Enabled          bool              `toml:"enabled"`
-	Paths            []string          `toml:"paths"`
-	ExcludeDirs      []string          `toml:"exclude_dirs"`
-	IncludeTests     bool              `toml:"include_tests"`
-	Fix              string            `toml:"fix"`
-	Calls            []string          `toml:"calls"`
-	Guard            string            `toml:"guard"`
-	ErrorPackage     string            `toml:"error_package"`
-	ErrorPackages    []string          `toml:"error_packages"`
-	SentinelPrefix   string            `toml:"sentinel_prefix"`
-	Dialect          string            `toml:"dialect"`
-	NewConstructor   string            `toml:"new_constructor"`
-	WrapConstructor  string            `toml:"wrap_constructor"`
-	OperationType    string            `toml:"operation_type"`
-	GenerateDomains  bool              `toml:"generate_domains"`
-	Categories       map[string]string `toml:"categories"`
-	ConstructorRoles []string          `toml:"constructor_roles"`
+	AllowContextParameters bool              `toml:"allow_context_parameters"`
+	Sources                []string          `toml:"sources"`
+	Allocators             map[string]string `toml:"allocators"`
+	ExcludeCalls           []string          `toml:"exclude_calls"`
+	ExcludeFunctions       []string          `toml:"exclude_functions"`
+	TypeCheck              bool              `toml:"type_check"`
+	Functions              []string          `toml:"functions"`
+	ContextFactories       []string          `toml:"context_factories"`
+	ContextArg             int               `toml:"context_arg"`
+	Boundaries             []PackageBoundary `toml:"boundaries"`
+	source                 *ast.File
+	positions              *token.FileSet
+	Enabled                bool              `toml:"enabled"`
+	Paths                  []string          `toml:"paths"`
+	ExcludeDirs            []string          `toml:"exclude_dirs"`
+	IncludeTests           bool              `toml:"include_tests"`
+	Fix                    string            `toml:"fix"`
+	Calls                  []string          `toml:"calls"`
+	Guard                  string            `toml:"guard"`
+	ErrorPackage           string            `toml:"error_package"`
+	ErrorPackages          []string          `toml:"error_packages"`
+	SentinelPrefix         string            `toml:"sentinel_prefix"`
+	Dialect                string            `toml:"dialect"`
+	NewConstructor         string            `toml:"new_constructor"`
+	WrapConstructor        string            `toml:"wrap_constructor"`
+	OperationType          string            `toml:"operation_type"`
+	GenerateDomains        bool              `toml:"generate_domains"`
+	Categories             map[string]string `toml:"categories"`
+	ConstructorRoles       []string          `toml:"constructor_roles"`
 }
 
 // PackageBoundary restricts imports from repository-relative source scopes.
@@ -74,6 +75,7 @@ type PackageBoundary struct {
 
 func defaultConfig() Config {
 	return Config{Schema: 1, Files: FileConfig{ExcludeDirs: []string{".git", ".jj", "vendor", "node_modules", "build"}, ExcludeGenerated: true}, Rules: map[string]RuleConfig{
+		ruleSubprocessContext:  {Paths: []string{"."}, Fix: "off", Calls: []string{"os/exec.CommandContext"}, Functions: []string{"*"}, ContextFactories: []string{"context.WithTimeout", "context.WithDeadline"}, AllowContextParameters: true},
 		ruleNativeLength:       {Paths: []string{"."}, Fix: "off", Sources: []string{"*.size", "*.payload_len"}},
 		ruleNativeAllocation:   {Paths: []string{"."}, Fix: "off", Allocators: map[string]string{"C.CString": "C.free"}},
 		ruleNativeLock:         {Paths: []string{"."}, Fix: "off", Calls: []string{"C.dyn_*"}, Guard: "runtimeMu"},
@@ -142,16 +144,17 @@ func loadConfig(root, explicit string) (Config, string, error) {
 			Schema   int            `toml:"schema"`
 			Files    FileConfig     `toml:"files"`
 			Rules    struct {
-				Assertions        RuleConfig `toml:"expensive-assertion"`
-				Structured        RuleConfig `toml:"structured-error"`
-				Comparison        RuleConfig `toml:"direct-error-comparison"`
-				NoAny             RuleConfig `toml:"no-any"`
-				Boundaries        RuleConfig `toml:"package-boundaries"`
-				CleanupErrors     RuleConfig `toml:"no-discarded-cleanup-error"`
-				CleanupContexts   RuleConfig `toml:"cleanup-context-policy"`
-				NativeLocks       RuleConfig `toml:"native-call-lock"`
-				NativeAllocations RuleConfig `toml:"native-allocation"`
-				NativeLengths     RuleConfig `toml:"native-length"`
+				Assertions         RuleConfig `toml:"expensive-assertion"`
+				Structured         RuleConfig `toml:"structured-error"`
+				Comparison         RuleConfig `toml:"direct-error-comparison"`
+				NoAny              RuleConfig `toml:"no-any"`
+				Boundaries         RuleConfig `toml:"package-boundaries"`
+				CleanupErrors      RuleConfig `toml:"no-discarded-cleanup-error"`
+				CleanupContexts    RuleConfig `toml:"cleanup-context-policy"`
+				NativeLocks        RuleConfig `toml:"native-call-lock"`
+				NativeAllocations  RuleConfig `toml:"native-allocation"`
+				NativeLengths      RuleConfig `toml:"native-length"`
+				SubprocessContexts RuleConfig `toml:"subprocess-context"`
 			} `toml:"rules"`
 		}{Schema: cfg.Schema, Files: cfg.Files}
 		wire.Rules.Assertions = cfg.Rules[ruleExpensiveAssertion]
@@ -164,6 +167,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		wire.Rules.NativeLocks = cfg.Rules[ruleNativeLock]
 		wire.Rules.NativeAllocations = cfg.Rules[ruleNativeAllocation]
 		wire.Rules.NativeLengths = cfg.Rules[ruleNativeLength]
+		wire.Rules.SubprocessContexts = cfg.Rules[ruleSubprocessContext]
 		decodeErr := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&wire)
 		if decodeErr != nil {
 			return Config{}, "", failure("decode configuration", decodeErr)
@@ -181,6 +185,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		cfg.Rules[ruleNativeLock] = wire.Rules.NativeLocks
 		cfg.Rules[ruleNativeAllocation] = wire.Rules.NativeAllocations
 		cfg.Rules[ruleNativeLength] = wire.Rules.NativeLengths
+		cfg.Rules[ruleSubprocessContext] = wire.Rules.SubprocessContexts
 	}
 	if validateErr := cfg.validate(); validateErr != nil {
 		return Config{}, "", validateErr
@@ -193,7 +198,7 @@ func (cfg Config) validate() error {
 		return failure("configuration schema must be 1", nil)
 	}
 	for name, rule := range cfg.Rules {
-		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation, ruleNativeLength}, name) {
+		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation, ruleNativeLength, ruleSubprocessContext}, name) {
 			return failure("unknown rule: "+name, nil)
 		}
 		if rule.Fix != "off" && rule.Fix != "safe" && rule.Fix != "structural" {
@@ -235,7 +240,7 @@ func (cfg Config) validate() error {
 				}
 			}
 		}
-		if name == ruleDiscardedCleanup || name == ruleCleanupContext {
+		if name == ruleDiscardedCleanup || name == ruleCleanupContext || name == ruleSubprocessContext {
 			if rule.Fix != "off" {
 				return failure(name+" is diagnostic only", nil)
 			}
@@ -250,7 +255,7 @@ func (cfg Config) validate() error {
 					return failure("invalid cleanup pattern", matchErr)
 				}
 			}
-			if name == ruleCleanupContext {
+			if name == ruleCleanupContext || name == ruleSubprocessContext {
 				if rule.ContextArg < 0 || len(rule.Functions) == 0 || (rule.Enabled && len(rule.ContextFactories) == 0) {
 					return failure("cleanup-context-policy requires functions, context_factories, and a nonnegative context_arg", nil)
 				}

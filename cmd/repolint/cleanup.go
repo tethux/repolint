@@ -94,10 +94,14 @@ func lintDiscardedCleanup(fset *token.FileSet, file *ast.File, report reporter, 
 // Context provenance is limited to local bindings from exact approved factories.
 // Reassignments, address escapes, and forwarding through helpers are rejected.
 func lintCleanupContexts(fset *token.FileSet, file *ast.File, report reporter, rule RuleConfig) {
+	lintContextBindings(fset, file, report, rule, ruleCleanupContext, false)
+}
+
+func lintContextBindings(fset *token.FileSet, file *ast.File, report reporter, rule RuleConfig, ruleName string, allowParameters bool) {
 	imports := importAliases(file)
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
-		if !ok || fn.Body == nil || !matchesCall(fn.Name.Name, rule.Functions) {
+		if !ok || fn.Body == nil || !matchesCall(fn.Name.Name, rule.Functions) || matchesCall(fn.Name.Name, rule.ExcludeFunctions) {
 			continue
 		}
 		bindings := map[*ast.Object]token.Pos{}
@@ -131,7 +135,7 @@ func lintCleanupContexts(fset *token.FileSet, file *ast.File, report reporter, r
 		})
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
 			call, isCall := node.(*ast.CallExpr)
-			if !isCall || !matchesCall(cleanupCallName(call, imports), rule.Calls) || ignored(file, fset, call.Pos(), ruleCleanupContext) {
+			if !isCall || !matchesCall(cleanupCallName(call, imports), rule.Calls) || ignored(file, fset, call.Pos(), ruleName) {
 				return true
 			}
 			approved := false
@@ -139,12 +143,21 @@ func lintCleanupContexts(fset *token.FileSet, file *ast.File, report reporter, r
 				if ident, isIdent := ast.Unparen(call.Args[rule.ContextArg]).(*ast.Ident); isIdent && ident.Obj != nil {
 					bound, found := bindings[ident.Obj]
 					approved = found && !invalid[ident.Obj] && bound < call.Pos()
+					if allowParameters && !invalid[ident.Obj] {
+						if field, ok := ident.Obj.Decl.(*ast.Field); ok {
+							if selector, yes := field.Type.(*ast.SelectorExpr); yes && selector.Sel.Name == "Context" {
+								if pkg, ok := selector.X.(*ast.Ident); ok && imports[pkg.Name] == "context" {
+									approved = true
+								}
+							}
+						}
+					}
 				}
 			}
 			if !approved {
 				report(diagnostic{
-					Rule: ruleCleanupContext, Position: fset.Position(call.Pos()), End: fset.Position(call.End()),
-					Message:    "rollback cleanup requires a context from an approved factory",
+					Rule: ruleName, Position: fset.Position(call.Pos()), End: fset.Position(call.End()),
+					Message:    "call requires a context from an approved factory or permitted parameter",
 					Suggestion: "bind the context with " + strings.Join(rule.ContextFactories, " or ") + " and defer its cancel function",
 				})
 			}
