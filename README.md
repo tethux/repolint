@@ -22,6 +22,13 @@ go run github.com/tethux/repolint/cmd/repolint@v0.2.1 .
 - `package-boundaries`: restrict dependency direction with scoped import policies.
 - `no-discarded-cleanup-error`: report ignored errors from configured cleanup calls.
 - `cleanup-context-policy`: require approved context factories in rollback functions.
+- `native-call-lock`: require a configured mutex around native calls.
+- `native-allocation`: require immediate deferred release of native allocations.
+- `native-length`: route native lengths through checked boundary helpers.
+- `subprocess-context`: propagate cancellation or use approved context factories.
+- `blocking-under-lock`: detect blocking channel operations and configured calls.
+- `suppression-policy`: audit reasons, rule names, blanket exemptions, and stale directives.
+- `schema-drift`: compare binding schemas with C, C++, and Go API surfaces.
 
 The first two rules run by default. Enable the others in `.repolint.toml`:
 
