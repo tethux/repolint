@@ -33,6 +33,8 @@ type FileConfig struct {
 }
 
 type RuleConfig struct {
+	ExcludeCalls     []string          `toml:"exclude_calls"`
+	ExcludeFunctions []string          `toml:"exclude_functions"`
 	TypeCheck        bool              `toml:"type_check"`
 	Functions        []string          `toml:"functions"`
 	ContextFactories []string          `toml:"context_factories"`
@@ -70,6 +72,7 @@ type PackageBoundary struct {
 
 func defaultConfig() Config {
 	return Config{Schema: 1, Files: FileConfig{ExcludeDirs: []string{".git", ".jj", "vendor", "node_modules", "build"}, ExcludeGenerated: true}, Rules: map[string]RuleConfig{
+		ruleNativeLock:         {Paths: []string{"."}, Fix: "off", Calls: []string{"C.dyn_*"}, Guard: "runtimeMu"},
 		ruleNoAny:              {Enabled: true, Paths: []string{"."}, Fix: "off"},
 		rulePackageBoundaries:  {Paths: []string{"."}, Fix: "off"},
 		ruleDiscardedCleanup:   {Paths: []string{"."}, Fix: "off", Calls: []string{"*.Release"}},
@@ -142,6 +145,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 				Boundaries      RuleConfig `toml:"package-boundaries"`
 				CleanupErrors   RuleConfig `toml:"no-discarded-cleanup-error"`
 				CleanupContexts RuleConfig `toml:"cleanup-context-policy"`
+				NativeLocks     RuleConfig `toml:"native-call-lock"`
 			} `toml:"rules"`
 		}{Schema: cfg.Schema, Files: cfg.Files}
 		wire.Rules.Assertions = cfg.Rules[ruleExpensiveAssertion]
@@ -151,6 +155,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		wire.Rules.Boundaries = cfg.Rules[rulePackageBoundaries]
 		wire.Rules.CleanupErrors = cfg.Rules[ruleDiscardedCleanup]
 		wire.Rules.CleanupContexts = cfg.Rules[ruleCleanupContext]
+		wire.Rules.NativeLocks = cfg.Rules[ruleNativeLock]
 		decodeErr := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&wire)
 		if decodeErr != nil {
 			return Config{}, "", failure("decode configuration", decodeErr)
@@ -165,6 +170,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		cfg.Rules[rulePackageBoundaries] = wire.Rules.Boundaries
 		cfg.Rules[ruleDiscardedCleanup] = wire.Rules.CleanupErrors
 		cfg.Rules[ruleCleanupContext] = wire.Rules.CleanupContexts
+		cfg.Rules[ruleNativeLock] = wire.Rules.NativeLocks
 	}
 	if validateErr := cfg.validate(); validateErr != nil {
 		return Config{}, "", validateErr
@@ -177,11 +183,24 @@ func (cfg Config) validate() error {
 		return failure("configuration schema must be 1", nil)
 	}
 	for name, rule := range cfg.Rules {
-		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext}, name) {
+		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock}, name) {
 			return failure("unknown rule: "+name, nil)
 		}
 		if rule.Fix != "off" && rule.Fix != "safe" && rule.Fix != "structural" {
 			return failure("invalid fix mode for "+name, nil)
+		}
+		if name == ruleNativeLock {
+			if rule.Fix != "off" || len(rule.Calls) == 0 {
+				return failure("native-call-lock requires calls and fix=off", nil)
+			}
+			if _, parseErr := parser.ParseExpr(rule.Guard); parseErr != nil || rule.Guard == "" {
+				return failure("invalid native lock guard", parseErr)
+			}
+			for _, pattern := range append(slices.Clone(rule.Calls), rule.ExcludeCalls...) {
+				if _, matchErr := path.Match(pattern, "call"); matchErr != nil {
+					return failure("invalid native call pattern", matchErr)
+				}
+			}
 		}
 		if name == ruleDiscardedCleanup || name == ruleCleanupContext {
 			if rule.Fix != "off" {

@@ -24,6 +24,7 @@ const (
 	rulePackageBoundaries  = "package-boundaries"
 	ruleDiscardedCleanup   = "no-discarded-cleanup-error"
 	ruleCleanupContext     = "cleanup-context-policy"
+	ruleNativeLock         = "native-call-lock"
 )
 
 type diagnostic struct {
@@ -250,6 +251,9 @@ func lintSource(path string, src []byte, opts options, report reporter) error {
 	}
 	if rule := opts.cfg.Rules[ruleCleanupContext]; rule.applies(rel) {
 		lintCleanupContexts(fset, file, emit, rule)
+	}
+	if rule := opts.cfg.Rules[ruleNativeLock]; rule.applies(rel) {
+		lintLockedCalls(fset, file, emit, rule)
 	}
 	return nil
 }
