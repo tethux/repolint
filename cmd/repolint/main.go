@@ -30,6 +30,7 @@ const (
 	ruleSubprocessContext  = "subprocess-context"
 	ruleBlockingLock       = "blocking-under-lock"
 	ruleSuppression        = "suppression-policy"
+	ruleSchemaDrift        = "schema-drift"
 )
 
 type diagnostic struct {
@@ -198,6 +199,11 @@ func lintRoot(root string, opts options, report reporter) error {
 			if _, exists := cfg.Rules[name]; !exists {
 				return failure("unknown fix rule: "+name, nil)
 			}
+		}
+	}
+	if rule := cfg.Rules[ruleSchemaDrift]; rule.Enabled {
+		if schemaErr := lintSchemaDrift(root, opts, report, rule); schemaErr != nil {
+			return schemaErr
 		}
 	}
 	if opts.fix {

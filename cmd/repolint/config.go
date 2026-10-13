@@ -33,6 +33,14 @@ type FileConfig struct {
 }
 
 type RuleConfig struct {
+	SchemaFiles            []string          `toml:"schema_files"`
+	Headers                []string          `toml:"headers"`
+	CDefinitions           []string          `toml:"c_definitions"`
+	CppFiles               []string          `toml:"cpp_files"`
+	GoFiles                []string          `toml:"go_files"`
+	HeaderCopies           map[string]string `toml:"header_copies"`
+	AllowCSymbols          []string          `toml:"allow_c_symbols"`
+	RequireSignatures      bool              `toml:"require_signatures"`
 	RequireReason          bool              `toml:"require_reason"`
 	AllowAll               bool              `toml:"allow_all"`
 	CheckUnused            bool              `toml:"check_unused"`
@@ -80,6 +88,7 @@ type PackageBoundary struct {
 
 func defaultConfig() Config {
 	return Config{Schema: 1, Files: FileConfig{ExcludeDirs: []string{".git", ".jj", "vendor", "node_modules", "build"}, ExcludeGenerated: true}, Rules: map[string]RuleConfig{
+		ruleSchemaDrift:        {Paths: []string{"."}, Fix: "off", RequireSignatures: true},
 		ruleSuppression:        {Paths: []string{"."}, Fix: "off", IncludeTests: true, RequireReason: true, CheckUnused: true},
 		ruleBlockingLock:       {Paths: []string{"."}, Fix: "off", Locks: []string{"*"}},
 		ruleSubprocessContext:  {Paths: []string{"."}, Fix: "off", Calls: []string{"os/exec.CommandContext"}, Functions: []string{"*"}, ContextFactories: []string{"context.WithTimeout", "context.WithDeadline"}, AllowContextParameters: true},
@@ -164,6 +173,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 				SubprocessContexts RuleConfig `toml:"subprocess-context"`
 				BlockingLocks      RuleConfig `toml:"blocking-under-lock"`
 				Suppressions       RuleConfig `toml:"suppression-policy"`
+				SchemaDrift        RuleConfig `toml:"schema-drift"`
 			} `toml:"rules"`
 		}{Schema: cfg.Schema, Files: cfg.Files}
 		wire.Rules.Assertions = cfg.Rules[ruleExpensiveAssertion]
@@ -179,6 +189,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		wire.Rules.SubprocessContexts = cfg.Rules[ruleSubprocessContext]
 		wire.Rules.BlockingLocks = cfg.Rules[ruleBlockingLock]
 		wire.Rules.Suppressions = cfg.Rules[ruleSuppression]
+		wire.Rules.SchemaDrift = cfg.Rules[ruleSchemaDrift]
 		decodeErr := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&wire)
 		if decodeErr != nil {
 			return Config{}, "", failure("decode configuration", decodeErr)
@@ -199,6 +210,7 @@ func loadConfig(root, explicit string) (Config, string, error) {
 		cfg.Rules[ruleSubprocessContext] = wire.Rules.SubprocessContexts
 		cfg.Rules[ruleBlockingLock] = wire.Rules.BlockingLocks
 		cfg.Rules[ruleSuppression] = wire.Rules.Suppressions
+		cfg.Rules[ruleSchemaDrift] = wire.Rules.SchemaDrift
 	}
 	if validateErr := cfg.validate(); validateErr != nil {
 		return Config{}, "", validateErr
@@ -211,11 +223,31 @@ func (cfg Config) validate() error {
 		return failure("configuration schema must be 1", nil)
 	}
 	for name, rule := range cfg.Rules {
-		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation, ruleNativeLength, ruleSubprocessContext, ruleBlockingLock, ruleSuppression}, name) {
+		if !slices.Contains([]string{ruleNoAny, ruleStructuredError, ruleErrorComparison, ruleExpensiveAssertion, rulePackageBoundaries, ruleDiscardedCleanup, ruleCleanupContext, ruleNativeLock, ruleNativeAllocation, ruleNativeLength, ruleSubprocessContext, ruleBlockingLock, ruleSuppression, ruleSchemaDrift}, name) {
 			return failure("unknown rule: "+name, nil)
 		}
 		if rule.Fix != "off" && rule.Fix != "safe" && rule.Fix != "structural" {
 			return failure("invalid fix mode for "+name, nil)
+		}
+		if name == ruleSchemaDrift {
+			if rule.Fix != "off" || (rule.Enabled && (len(rule.SchemaFiles) == 0 || len(rule.Headers) == 0 || len(rule.CDefinitions) == 0 || len(rule.CppFiles) == 0 || len(rule.GoFiles) == 0)) {
+				return failure("schema-drift requires schema_files, headers, c_definitions, cpp_files, go_files, and fix=off", nil)
+			}
+			for _, patterns := range [][]string{rule.SchemaFiles, rule.Headers, rule.CDefinitions, rule.CppFiles, rule.GoFiles} {
+				for _, pattern := range patterns {
+					if !validPrefix(pattern) {
+						return failure("invalid schema input path: "+pattern, nil)
+					}
+					if _, matchErr := filepath.Match(pattern, "file"); matchErr != nil {
+						return failure("invalid schema glob", matchErr)
+					}
+				}
+			}
+			for source, target := range rule.HeaderCopies {
+				if !validPrefix(source) || !validPrefix(target) {
+					return failure("invalid header copy path", nil)
+				}
+			}
 		}
 		if name == ruleSuppression && rule.Fix != "off" {
 			return failure("suppression-policy is diagnostic only", nil)
